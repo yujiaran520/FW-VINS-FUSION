@@ -1,0 +1,63 @@
+# ROS/colcon and CMake outputs
+build/
+install/
+log/
+devel/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+symlink_install_manifest.txt
+
+# Datasets, bags, and experiment outputs
+data/
+dataset/
+datasets/
+results/
+result/
+logs/
+*.bag
+*.bag.active
+*.db3
+*.mcap
+*.csv
+*.log
+
+# Downloaded dependencies and generated binaries
+/ThirdParty/
+third_party/install/
+*.a
+*.so
+*.so.*
+*.o
+*.out
+*.bin
+
+# Large non-code demo assets
+camera_models/camera_calib_example/
+global_fusion/models/
+/support_files/
+/docker/
+/deps_new.sh
+/get_example_data.sh
+/install_external_deps.sh
+/config/extrinsic_parameter_example.pdf
+
+# Generated calibration and estimator files
+ex_calib_result.yaml
+vins_result.csv
+result.txt
+result_global.txt
+result_gps.txt
+camera_camera_calib.yaml
+camera_chessboard_data.dat
+topic_hz_results.txt
+
+# Local tools and editor files
+.vscode/
+.idea/
+__pycache__/
+*.py[cod]
+*~
+.DS_Store

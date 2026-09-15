@@ -1,0 +1,82 @@
+%YAML:1.0
+
+# FWAF-VID 单目红外相机 + IMU，采用实测可满足 1.0x 实时处理的计算组合。
+# 传感器模式：启用 IMU，使用一个相机。
+imu: 1
+num_of_cam: 1
+
+# ROS 2 输入主题。
+imu_topic: "/camera/imu"
+image0_topic: "/camera/infra1/image_rect_raw"
+image1_topic: "/camera/infra2/image_rect_raw"
+# 运行脚本会将该路径替换为本次结果目录。
+output_path: "/tmp"
+
+# 相机内参文件使用相对于本配置文件的路径。
+cam0_calib: "left.yaml"
+cam1_calib: "right.yaml"
+image_width: 640
+image_height: 480
+
+# GPU 计算开关：角点检测和光流使用 OpenCV CUDA；Ceres 保持 CPU 后端。
+# 当前小规模 DENSE_SCHUR 问题使用 CUDA Ceres 反而更慢，不建议开启 use_gpu_ceres。
+use_gpu: 1
+use_gpu_acc_flow: 1
+use_gpu_ceres: 0
+
+# 外参模式：0=使用固定外参，1=围绕给定初值在线优化，2=无初值在线标定。
+estimate_extrinsic: 1
+# IMU/body 到左相机的初始外参变换矩阵。
+body_T_cam0: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [ 9.9989954922016522e-01, 3.9070298174125953e-03,
+       -1.3624484845901277e-02, -6.1352567829252268e-03,
+       -3.8650434471972635e-03, 9.9998770499000122e-01,
+       3.1066554333436442e-03, 3.8769701377178840e-03,
+       1.3636455128134368e-02, -3.0536841415075978e-03,
+       9.9990235628520363e-01, 1.4824760946101578e-02, 0., 0., 0., 1. ]
+
+# 启用前端与后端并行处理；该模式下后端约以相机频率的一半运行。
+multiple_thread: 1
+# 每帧最多保留的特征点数量及特征点之间的最小像素距离。
+max_cnt: 150
+min_dist: 30
+# freq 为原始 VINS 前端兼容参数（当前集成节点未读取）；F_threshold 为基础矩阵 RANSAC 阈值。
+freq: 10
+F_threshold: 1.0
+# 是否绘制并发布 /image_track；1.0x 正常运行建议关闭，需要调试图像时由脚本 --show-track 开启。
+show_track: 0
+# 开启前后向光流一致性检查，可减少错误匹配。
+flow_back: 1
+
+# 后端单次求解时间上限、最大迭代次数和关键帧视差阈值（像素）。
+max_solver_time: 0.04
+max_num_iterations: 8
+keyframe_parallax: 10.0
+
+# 经典 VINS 中点预积分沿用的 IMU 噪声参数。
+acc_n: 0.1
+gyr_n: 0.01
+acc_w: 0.001
+gyr_w: 0.0001
+# 当地重力加速度模长。
+g_norm: 9.805
+# 等变 Gal(3) IMU 预积分；0 使用原始 VINS 中点预积分，1 启用等变预积分。
+equivariant_preintegration_enable: 0
+# 仅由等变预积分使用的连续时间噪声密度，避免与经典中点模型的离散参数语义混用。
+equivariant_acc_noise_density: 0.1
+equivariant_gyr_noise_density: 0.01
+equivariant_acc_bias_random_walk: 0.001
+equivariant_gyr_bias_random_walk: 0.0001
+
+# 在线估计相机与 IMU 的时间偏移；td 为初始时间差（秒）。
+estimate_td: 1
+td: 0.00
+
+# 是否加载历史位姿图；运行脚本会替换位姿图保存路径。
+load_previous_pose_graph: 0
+pose_graph_save_path: "/tmp"
+# 是否保存跟踪图像，批处理和实时运行建议关闭。
+save_image: 0
