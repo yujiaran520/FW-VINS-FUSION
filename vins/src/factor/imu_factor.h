@@ -18,21 +18,56 @@
 
 #include <ceres/ceres.h>
 #include <algorithm>
+#include <cstdint>
 
 #define ROS_INFO RCUTILS_LOG_INFO
 #define ROS_WARN RCUTILS_LOG_WARN
 #define ROS_ERROR RCUTILS_LOG_ERROR
 
 
+// v1.1 replaced v1.0's center-difference Jacobians with the analytic blocks
+// below; v1.2 additionally caches fixed preintegration terms and rejects stale
+// cache revisions after bias repropagation.
 class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
 {
   public:
     IMUFactor() = delete;
-    IMUFactor(IntegrationBase* _pre_integration):pre_integration(_pre_integration)
+    IMUFactor(IntegrationBase* _pre_integration)
+        : pre_integration(_pre_integration), cache_valid_(false),
+          preintegration_revision_(0), equivariant_dt_(0.0)
     {
+        if (!pre_integration || !pre_integration->isValidForFactor())
+            return;
+        preintegration_revision_ = pre_integration->revision();
+        cache_valid_ = computeSqrtInformation(
+            pre_integration->covariance, sqrt_information_);
+        if (cache_valid_ && pre_integration->usesEquivariantPreintegration())
+        {
+            const auto &equivariant_preintegration =
+                *pre_integration->equivariant_preintegration;
+            equivariant_dt_ = pre_integration->sum_dt;
+            equivariant_upsilon_ = equivariant_preintegration.upsilon();
+            equivariant_bias_hat_ = equivariant_preintegration.biasHat();
+            equivariant_bias_correction_ =
+                equivariant_preintegration.biasCorrectionJacobian();
+        }
     }
     virtual bool Evaluate(double const *const *parameters, double *residuals, double **jacobians) const
     {
+
+        if (!cache_valid_ || !residuals ||
+            !pre_integration->isValidForFactor() ||
+            pre_integration->revision() != preintegration_revision_)
+            return false;
+        const int block_sizes[4] = {7, 9, 7, 9};
+        for (int block = 0; block < 4; ++block)
+        {
+            if (!parameters[block])
+                return false;
+            for (int index = 0; index < block_sizes[block]; ++index)
+                if (!std::isfinite(parameters[block][index]))
+                    return false;
+        }
 
         Eigen::Vector3d Pi(parameters[0][0], parameters[0][1], parameters[0][2]);
         Eigen::Quaterniond Qi(parameters[0][6], parameters[0][3], parameters[0][4], parameters[0][5]);
@@ -73,33 +108,20 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
 #endif
 
         Eigen::Map<Eigen::Matrix<double, 15, 1>> residual(residuals);
-        residual = pre_integration->evaluate(Pi, Qi, Vi, Bai, Bgi,
-                                            Pj, Qj, Vj, Baj, Bgj);
-
-        Eigen::Matrix<double, 15, 15> sqrt_info;
-        if (pre_integration->usesEquivariantPreintegration())
-        {
-            if (!computeSqrtInformation(pre_integration->covariance, sqrt_info))
-            {
-                ROS_WARN("invalid equivariant preintegration covariance");
-                return false;
-            }
-        }
-        else
-        {
-            sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(
-                pre_integration->covariance.inverse()).matrixL().transpose();
-        }
-        //sqrt_info.setIdentity();
-        residual = sqrt_info * residual;
-
         if (jacobians && pre_integration->usesEquivariantPreintegration())
         {
-            evaluateEquivariantJacobians(Pi, Qi, Vi, Bai, Bgi,
-                                         Pj, Qj, Vj, Baj, Bgj,
-                                         sqrt_info, jacobians);
-            return true;
+            return evaluateEquivariantJacobians(
+                Pi, Qi, Vi, Bai, Bgi, Pj, Qj, Vj, Baj, Bgj,
+                sqrt_information_, residual, jacobians);
         }
+
+        residual = pre_integration->evaluate(Pi, Qi, Vi, Bai, Bgi,
+                                             Pj, Qj, Vj, Baj, Bgj);
+        if (!residual.allFinite())
+            return false;
+        residual = sqrt_information_ * residual;
+        if (!residual.allFinite())
+            return false;
 
         if (jacobians)
         {
@@ -136,7 +158,7 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
 
                 jacobian_pose_i.block<3, 3>(O_V, O_R) = Utility::skewSymmetric(Qi.inverse() * (G * sum_dt + Vj - Vi));
 
-                jacobian_pose_i = sqrt_info * jacobian_pose_i;
+                jacobian_pose_i = sqrt_information_ * jacobian_pose_i;
 
                 if (jacobian_pose_i.maxCoeff() > 1e8 || jacobian_pose_i.minCoeff() < -1e8)
                 {
@@ -169,7 +191,7 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
 
                 jacobian_speedbias_i.block<3, 3>(O_BG, O_BG - O_V) = -Eigen::Matrix3d::Identity();
 
-                jacobian_speedbias_i = sqrt_info * jacobian_speedbias_i;
+                jacobian_speedbias_i = sqrt_information_ * jacobian_speedbias_i;
 
                 //ROS_ASSERT(fabs(jacobian_speedbias_i.maxCoeff()) < 1e8);
                 //ROS_ASSERT(fabs(jacobian_speedbias_i.minCoeff()) < 1e8);
@@ -188,7 +210,7 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
                 jacobian_pose_j.block<3, 3>(O_R, O_R) = Utility::Qleft(corrected_delta_q.inverse() * Qi.inverse() * Qj).bottomRightCorner<3, 3>();
 #endif
 
-                jacobian_pose_j = sqrt_info * jacobian_pose_j;
+                jacobian_pose_j = sqrt_information_ * jacobian_pose_j;
 
                 //ROS_ASSERT(fabs(jacobian_pose_j.maxCoeff()) < 1e8);
                 //ROS_ASSERT(fabs(jacobian_pose_j.minCoeff()) < 1e8);
@@ -204,13 +226,25 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
 
                 jacobian_speedbias_j.block<3, 3>(O_BG, O_BG - O_V) = Eigen::Matrix3d::Identity();
 
-                jacobian_speedbias_j = sqrt_info * jacobian_speedbias_j;
+                jacobian_speedbias_j = sqrt_information_ * jacobian_speedbias_j;
 
                 //ROS_ASSERT(fabs(jacobian_speedbias_j.maxCoeff()) < 1e8);
                 //ROS_ASSERT(fabs(jacobian_speedbias_j.minCoeff()) < 1e8);
             }
         }
 
+        if (jacobians)
+        {
+            for (int block = 0; block < 4; ++block)
+            {
+                if (!jacobians[block])
+                    continue;
+                const Eigen::Map<const Eigen::VectorXd> values(
+                    jacobians[block], 15 * block_sizes[block]);
+                if (!values.allFinite())
+                    return false;
+            }
+        }
         return true;
     }
 
@@ -252,32 +286,30 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
         return sqrt_info.allFinite();
     }
 
-    void evaluateEquivariantJacobians(
+    bool evaluateEquivariantJacobians(
         const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi,
         const Eigen::Vector3d &Vi, const Eigen::Vector3d &Bai,
         const Eigen::Vector3d &Bgi, const Eigen::Vector3d &Pj,
         const Eigen::Quaterniond &Qj, const Eigen::Vector3d &Vj,
         const Eigen::Vector3d &Baj, const Eigen::Vector3d &Bgj,
         const Eigen::Matrix<double, 15, 15> &sqrt_info,
+        Eigen::Ref<Eigen::Matrix<double, 15, 1>> weighted_residual,
         double **jacobians) const
     {
         using Vec10 = equivariant::Preintegration::Vec10;
         using Mat10 = equivariant::Preintegration::Mat10;
-        const double dt = pre_integration->sum_dt;
+        const double dt = equivariant_dt_;
         const Eigen::Matrix3d Ri_transpose = Qi.inverse().toRotationMatrix();
         const Eigen::Vector3d predicted_p =
             Pi + Vi * dt - 0.5 * G * dt * dt;
         const Eigen::Vector3d predicted_v = Vi - G * dt;
         const Vec10 bias_i = IntegrationBase::makeEquivariantBias(Bai, Bgi);
         const Vec10 bias_j = IntegrationBase::makeEquivariantBias(Baj, Bgj);
-        const auto &equivariant_preintegration =
-            *pre_integration->equivariant_preintegration;
-        const Mat10 bias_correction =
-            equivariant_preintegration.biasCorrectionJacobian();
+        const Mat10 &bias_correction = equivariant_bias_correction_;
         const Vec10 correction =
-            bias_correction * (bias_i - equivariant_preintegration.biasHat());
+            bias_correction * (bias_i - equivariant_bias_hat_);
         const equivariant::Gal3 corrected =
-            equivariant_preintegration.correctedUpsilon(bias_i);
+            equivariant::Gal3::exp(correction) * equivariant_upsilon_;
         const equivariant::Gal3 truth(
             Ri_transpose * Qj.toRotationMatrix(),
             Ri_transpose * (Vj - predicted_v),
@@ -286,10 +318,21 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
         const Vec10 nav_error = equivariant::Gal3::log(error);
         const Mat10 inverse_left_jacobian =
             equivariant::Gal3::inverseLeftJacobian(nav_error);
+        const Mat10 truth_adjoint = truth.adjoint();
+        const Mat10 error_adjoint = error.adjoint();
         const Vec10 bias_delta = bias_j - bias_i;
-        const Vec10 transported_bias_delta = truth.adjoint() * bias_delta;
+        const Vec10 transported_bias_delta = truth_adjoint * bias_delta;
         const Vec10 bias_error =
             -inverse_left_jacobian * transported_bias_delta;
+        Eigen::Matrix<double, 15, 1> unweighted_residual;
+        unweighted_residual.segment<3>(O_P) = nav_error.segment<3>(6);
+        unweighted_residual.segment<3>(O_R) = nav_error.segment<3>(0);
+        unweighted_residual.segment<3>(O_V) = nav_error.segment<3>(3);
+        unweighted_residual.segment<3>(O_BA) = bias_error.segment<3>(3);
+        unweighted_residual.segment<3>(O_BG) = bias_error.segment<3>(0);
+        weighted_residual = sqrt_info * unweighted_residual;
+        if (!weighted_residual.allFinite())
+            return false;
 
         // H maps a perturbation of Log(error) to the derivative of the
         // inverse-left-Jacobian term in the geometrically coupled bias error.
@@ -315,13 +358,13 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
             {
                 const Vec10 error_left_perturbation =
                     truth_left_perturbation -
-                    error.adjoint() * corrected_left_perturbation;
+                    error_adjoint * corrected_left_perturbation;
                 const Vec10 nav_derivative =
                     inverse_left_jacobian * error_left_perturbation;
                 const Vec10 transported_bias_derivative =
                     equivariant::Gal3::algebraAdjoint(
                         truth_left_perturbation) * transported_bias_delta +
-                    truth.adjoint() * bias_delta_perturbation;
+                    truth_adjoint * bias_delta_perturbation;
                 const Vec10 bias_derivative =
                     bias_error_log_jacobian * nav_derivative -
                     inverse_left_jacobian * transported_bias_derivative;
@@ -353,6 +396,8 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
                 J.col(axis + 3) = residualDerivative(
                     truth_perturbation, Vec10::Zero(), Vec10::Zero());
             }
+            if (!J.allFinite())
+                return false;
         }
 
         if (jacobians[1])
@@ -381,6 +426,8 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
                     corrected_bias_left_jacobian * bias_perturbation,
                     -bias_perturbation);
             }
+            if (!J.allFinite())
+                return false;
         }
 
         if (jacobians[2])
@@ -396,10 +443,12 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
 
                 Vec10 right_rotation = Vec10::Zero();
                 right_rotation(axis) = 1.0;
-                truth_perturbation = truth.adjoint() * right_rotation;
+                truth_perturbation = truth_adjoint * right_rotation;
                 J.col(axis + 3) = residualDerivative(
                     truth_perturbation, Vec10::Zero(), Vec10::Zero());
             }
+            if (!J.allFinite())
+                return false;
         }
 
         if (jacobians[3])
@@ -427,7 +476,18 @@ class IMUFactor : public ceres::SizedCostFunction<15, 7, 9, 7, 9>
                 J.col(axis + 6) = residualDerivative(
                     Vec10::Zero(), Vec10::Zero(), bias_perturbation);
             }
+            if (!J.allFinite())
+                return false;
         }
+        return true;
     }
+
+    bool cache_valid_;
+    std::uint64_t preintegration_revision_;
+    Eigen::Matrix<double, 15, 15> sqrt_information_;
+    double equivariant_dt_;
+    equivariant::Gal3 equivariant_upsilon_;
+    equivariant::Preintegration::Vec10 equivariant_bias_hat_;
+    equivariant::Preintegration::Mat10 equivariant_bias_correction_;
 
 };

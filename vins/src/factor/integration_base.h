@@ -15,20 +15,43 @@
 
 #include <ceres/ceres.h>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 using namespace Eigen;
 
+// v1.2 extends the v1.1 preintegration path with continuous-density noise
+// discretization plus checkpoint/clone/commit support for atomic propagation.
 class IntegrationBase
 {
   public:
+    struct Checkpoint
+    {
+        double dt;
+        Eigen::Vector3d acc_0, gyr_0, acc_1, gyr_1;
+        Eigen::Vector3d linearized_ba, linearized_bg;
+        Eigen::Matrix<double, 15, 15> jacobian, covariance, step_jacobian;
+        Eigen::Matrix<double, 15, 18> step_V;
+        double sum_dt;
+        Eigen::Vector3d delta_p, delta_v;
+        Eigen::Quaterniond delta_q;
+        std::size_t sample_count;
+        std::unique_ptr<equivariant::Preintegration> equivariant_preintegration;
+        bool valid;
+        std::uint64_t revision;
+    };
+
     IntegrationBase() = delete;
     IntegrationBase(const Eigen::Vector3d &_acc_0, const Eigen::Vector3d &_gyr_0,
                     const Eigen::Vector3d &_linearized_ba, const Eigen::Vector3d &_linearized_bg)
-        : acc_0{_acc_0}, gyr_0{_gyr_0}, linearized_acc{_acc_0}, linearized_gyr{_gyr_0},
+        : dt{0.0}, acc_0{_acc_0}, gyr_0{_gyr_0}, acc_1{_acc_0}, gyr_1{_gyr_0},
+          linearized_acc{_acc_0}, linearized_gyr{_gyr_0},
           linearized_ba{_linearized_ba}, linearized_bg{_linearized_bg},
-            jacobian{Eigen::Matrix<double, 15, 15>::Identity()}, covariance{Eigen::Matrix<double, 15, 15>::Zero()},
+          jacobian{Eigen::Matrix<double, 15, 15>::Identity()},
+          covariance{Eigen::Matrix<double, 15, 15>::Zero()},
+          step_jacobian{Eigen::Matrix<double, 15, 15>::Zero()},
+          step_V{Eigen::Matrix<double, 15, 18>::Zero()},
           sum_dt{0.0}, delta_p{Eigen::Vector3d::Zero()}, delta_q{Eigen::Quaterniond::Identity()}, delta_v{Eigen::Vector3d::Zero()},
-          use_equivariant{IMU_PREINTEGRATION_ENABLE != 0}
+          use_equivariant{IMU_PREINTEGRATION_ENABLE != 0}, valid{true}, revision_{0}
 
     {
         noise = Eigen::Matrix<double, 18, 18>::Zero();
@@ -42,31 +65,162 @@ class IntegrationBase
         if (use_equivariant)
         {
             equivariant_preintegration.reset(new equivariant::Preintegration(
-                EQUIVARIANT_GYR_N, EQUIVARIANT_ACC_N,
-                EQUIVARIANT_GYR_W, EQUIVARIANT_ACC_W,
+                GYR_N, ACC_N, GYR_W, ACC_W,
                 makeEquivariantBias(_linearized_ba, _linearized_bg)));
         }
     }
 
-    void push_back(double dt, const Eigen::Vector3d &acc, const Eigen::Vector3d &gyr)
+    std::unique_ptr<IntegrationBase> clone() const
     {
-        if (use_equivariant &&
-            (!std::isfinite(dt) || dt <= 0.0 || !acc.allFinite() || !gyr.allFinite()))
+        std::unique_ptr<IntegrationBase> result(new IntegrationBase(
+            linearized_acc, linearized_gyr, linearized_ba, linearized_bg));
+        if (!result->commitFrom(*this))
+            return nullptr;
+        return result;
+    }
+
+    bool commitFrom(const IntegrationBase &source)
+    {
+        if (use_equivariant != source.use_equivariant ||
+            !linearized_acc.isApprox(source.linearized_acc, 0.0) ||
+            !linearized_gyr.isApprox(source.linearized_gyr, 0.0))
+            return false;
+
+        dt = source.dt;
+        acc_0 = source.acc_0;
+        gyr_0 = source.gyr_0;
+        acc_1 = source.acc_1;
+        gyr_1 = source.gyr_1;
+        linearized_ba = source.linearized_ba;
+        linearized_bg = source.linearized_bg;
+        jacobian = source.jacobian;
+        covariance = source.covariance;
+        step_jacobian = source.step_jacobian;
+        step_V = source.step_V;
+        noise = source.noise;
+        sum_dt = source.sum_dt;
+        delta_p = source.delta_p;
+        delta_q = source.delta_q;
+        delta_v = source.delta_v;
+        dt_buf = source.dt_buf;
+        acc_buf = source.acc_buf;
+        gyr_buf = source.gyr_buf;
+        valid = source.valid;
+        revision_ = source.revision_;
+        if (source.equivariant_preintegration)
         {
-            ROS_WARN("Discard invalid IMU interval in equivariant preintegration");
-            return;
+            equivariant_preintegration.reset(new equivariant::Preintegration(
+                *source.equivariant_preintegration));
         }
+        else
+        {
+            equivariant_preintegration.reset();
+        }
+        return true;
+    }
+
+    Checkpoint checkpoint() const
+    {
+        Checkpoint result;
+        result.dt = dt;
+        result.acc_0 = acc_0;
+        result.gyr_0 = gyr_0;
+        result.acc_1 = acc_1;
+        result.gyr_1 = gyr_1;
+        result.linearized_ba = linearized_ba;
+        result.linearized_bg = linearized_bg;
+        result.jacobian = jacobian;
+        result.covariance = covariance;
+        result.step_jacobian = step_jacobian;
+        result.step_V = step_V;
+        result.sum_dt = sum_dt;
+        result.delta_p = delta_p;
+        result.delta_q = delta_q;
+        result.delta_v = delta_v;
+        result.sample_count = dt_buf.size();
+        if (equivariant_preintegration)
+        {
+            result.equivariant_preintegration.reset(
+                new equivariant::Preintegration(*equivariant_preintegration));
+        }
+        result.valid = valid;
+        result.revision = revision_;
+        return result;
+    }
+
+    void restore(Checkpoint &&source)
+    {
+        dt = source.dt;
+        acc_0 = source.acc_0;
+        gyr_0 = source.gyr_0;
+        acc_1 = source.acc_1;
+        gyr_1 = source.gyr_1;
+        linearized_ba = source.linearized_ba;
+        linearized_bg = source.linearized_bg;
+        jacobian = source.jacobian;
+        covariance = source.covariance;
+        step_jacobian = source.step_jacobian;
+        step_V = source.step_V;
+        sum_dt = source.sum_dt;
+        delta_p = source.delta_p;
+        delta_q = source.delta_q;
+        delta_v = source.delta_v;
+        dt_buf.resize(source.sample_count);
+        acc_buf.resize(source.sample_count);
+        gyr_buf.resize(source.sample_count);
+        equivariant_preintegration =
+            std::move(source.equivariant_preintegration);
+        valid = source.valid;
+        revision_ = source.revision;
+    }
+
+    bool push_back(double dt, const Eigen::Vector3d &acc, const Eigen::Vector3d &gyr)
+    {
+        if (!valid || !std::isfinite(dt) || dt <= 0.0 ||
+            !acc.allFinite() || !gyr.allFinite())
+        {
+            ROS_WARN("Reject invalid IMU interval before preintegration");
+            return false;
+        }
+        if (!propagate(dt, acc, gyr))
+            return false;
         dt_buf.push_back(dt);
         acc_buf.push_back(acc);
         gyr_buf.push_back(gyr);
-        propagate(dt, acc, gyr);
+        ++revision_;
+        return true;
     }
 
-    void repropagate(const Eigen::Vector3d &_linearized_ba, const Eigen::Vector3d &_linearized_bg)
+    bool repropagate(const Eigen::Vector3d &_linearized_ba, const Eigen::Vector3d &_linearized_bg)
     {
+        if (!_linearized_ba.allFinite() || !_linearized_bg.allFinite())
+            return false;
+
+        const double previous_dt = dt;
+        const Eigen::Vector3d previous_acc_0 = acc_0;
+        const Eigen::Vector3d previous_gyr_0 = gyr_0;
+        const Eigen::Vector3d previous_acc_1 = acc_1;
+        const Eigen::Vector3d previous_gyr_1 = gyr_1;
+        const Eigen::Vector3d previous_ba = linearized_ba;
+        const Eigen::Vector3d previous_bg = linearized_bg;
+        const Eigen::Matrix<double, 15, 15> previous_jacobian = jacobian;
+        const Eigen::Matrix<double, 15, 15> previous_covariance = covariance;
+        const double previous_sum_dt = sum_dt;
+        const Eigen::Vector3d previous_delta_p = delta_p;
+        const Eigen::Quaterniond previous_delta_q = delta_q;
+        const Eigen::Vector3d previous_delta_v = delta_v;
+        const bool previous_valid = valid;
+        std::unique_ptr<equivariant::Preintegration> previous_equivariant;
+        if (equivariant_preintegration)
+            previous_equivariant.reset(
+                new equivariant::Preintegration(*equivariant_preintegration));
+
         sum_dt = 0.0;
+        dt = 0.0;
         acc_0 = linearized_acc;
         gyr_0 = linearized_gyr;
+        acc_1 = linearized_acc;
+        gyr_1 = linearized_gyr;
         delta_p.setZero();
         delta_q.setIdentity();
         delta_v.setZero();
@@ -80,10 +234,34 @@ class IntegrationBase
                 makeEquivariantBias(_linearized_ba, _linearized_bg));
         }
         for (int i = 0; i < static_cast<int>(dt_buf.size()); i++)
-            propagate(dt_buf[i], acc_buf[i], gyr_buf[i]);
+        {
+            if (propagate(dt_buf[i], acc_buf[i], gyr_buf[i]))
+                continue;
+
+            dt = previous_dt;
+            acc_0 = previous_acc_0;
+            gyr_0 = previous_gyr_0;
+            acc_1 = previous_acc_1;
+            gyr_1 = previous_gyr_1;
+            linearized_ba = previous_ba;
+            linearized_bg = previous_bg;
+            jacobian = previous_jacobian;
+            covariance = previous_covariance;
+            sum_dt = previous_sum_dt;
+            delta_p = previous_delta_p;
+            delta_q = previous_delta_q;
+            delta_v = previous_delta_v;
+            valid = previous_valid;
+            if (previous_equivariant)
+                *equivariant_preintegration = *previous_equivariant;
+            return false;
+        }
+        valid = previous_valid;
+        ++revision_;
+        return true;
     }
 
-    void equivariantIntegration(double integration_dt,
+    bool equivariantIntegration(double integration_dt,
                                 const Eigen::Vector3d &previous_acc,
                                 const Eigen::Vector3d &previous_gyr,
                                 const Eigen::Vector3d &current_acc,
@@ -97,25 +275,32 @@ class IntegrationBase
         result_linearized_ba = linearized_ba;
         result_linearized_bg = linearized_bg;
 
-        const bool integrated = equivariant_preintegration->integrate(
+        equivariant::Preintegration candidate = *equivariant_preintegration;
+        const bool integrated = candidate.integrate(
             previous_acc, previous_gyr, integration_dt);
         if (!integrated)
         {
             ROS_WARN("Equivariant IMU propagation produced invalid covariance");
-            result_delta_p = delta_p;
-            result_delta_q = delta_q;
-            result_delta_v = delta_v;
-            return;
+            return false;
         }
 
-        const equivariant::Gal3 &upsilon = equivariant_preintegration->upsilon();
+        const equivariant::Gal3 &upsilon = candidate.upsilon();
         result_delta_q = Eigen::Quaterniond(upsilon.R()).normalized();
         result_delta_v = upsilon.v();
         result_delta_p = upsilon.p();
-        covariance = convertEquivariantCovarianceToVins(
-            equivariant_preintegration->covariance15());
-        covariance = 0.5 * (covariance + covariance.transpose());
+        Eigen::Matrix<double, 15, 15> result_covariance =
+            convertEquivariantCovarianceToVins(candidate.covariance15());
+        result_covariance = 0.5 *
+            (result_covariance + result_covariance.transpose());
+        if (!result_delta_q.coeffs().allFinite() ||
+            !result_delta_v.allFinite() || !result_delta_p.allFinite() ||
+            !result_covariance.allFinite())
+            return false;
+
+        *equivariant_preintegration = candidate;
+        covariance = result_covariance;
         jacobian.setIdentity();
+        return true;
     }
 
     void midPointIntegration(double _dt, 
@@ -189,16 +374,28 @@ class IntegrationBase
             //step_jacobian = F;
             //step_V = V;
             jacobian = F * jacobian;
-            covariance = F * covariance * F.transpose() + V * noise * V.transpose();
+            Eigen::Matrix<double, 18, 18> discrete_noise = noise / _dt;
+            discrete_noise.topLeftCorner<12, 12>() *= 2.0;
+            covariance = F * covariance * F.transpose() +
+                         V * discrete_noise * V.transpose();
+            covariance = 0.5 * (covariance + covariance.transpose());
         }
 
     }
 
-    void propagate(double _dt, const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1)
+    bool propagate(double _dt, const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1)
     {
-        dt = _dt;
-        acc_1 = _acc_1;
-        gyr_1 = _gyr_1;
+        if (!std::isfinite(_dt) || _dt <= 0.0 || !_acc_1.allFinite() ||
+            !_gyr_1.allFinite())
+            return false;
+
+        Eigen::Matrix<double, 15, 15> previous_jacobian;
+        Eigen::Matrix<double, 15, 15> previous_covariance;
+        if (!use_equivariant)
+        {
+            previous_jacobian = jacobian;
+            previous_covariance = covariance;
+        }
         Vector3d result_delta_p;
         Quaterniond result_delta_q;
         Vector3d result_delta_v;
@@ -207,9 +404,11 @@ class IntegrationBase
 
         if (use_equivariant)
         {
-            equivariantIntegration(_dt, acc_0, gyr_0, _acc_1, _gyr_1,
-                                   result_delta_p, result_delta_q, result_delta_v,
-                                   result_linearized_ba, result_linearized_bg);
+            if (!equivariantIntegration(
+                    _dt, acc_0, gyr_0, _acc_1, _gyr_1,
+                    result_delta_p, result_delta_q, result_delta_v,
+                    result_linearized_ba, result_linearized_bg))
+                return false;
         }
         else
         {
@@ -217,6 +416,23 @@ class IntegrationBase
                                 linearized_ba, linearized_bg,
                                 result_delta_p, result_delta_q, result_delta_v,
                                 result_linearized_ba, result_linearized_bg, 1);
+        }
+
+        const double next_sum_dt = sum_dt + _dt;
+        const double quaternion_norm = result_delta_q.norm();
+        if (!result_delta_p.allFinite() || !result_delta_v.allFinite() ||
+            !result_delta_q.coeffs().allFinite() ||
+            !std::isfinite(quaternion_norm) || quaternion_norm <= 1e-12 ||
+            !result_linearized_ba.allFinite() ||
+            !result_linearized_bg.allFinite() || !jacobian.allFinite() ||
+            !covariance.allFinite() || !std::isfinite(next_sum_dt))
+        {
+            if (!use_equivariant)
+            {
+                jacobian = previous_jacobian;
+                covariance = previous_covariance;
+            }
+            return false;
         }
 
         //checkJacobian(_dt, acc_0, gyr_0, acc_1, gyr_1, delta_p, delta_q, delta_v,
@@ -227,10 +443,13 @@ class IntegrationBase
         linearized_ba = result_linearized_ba;
         linearized_bg = result_linearized_bg;
         delta_q.normalize();
-        sum_dt += dt;
-        acc_0 = acc_1;
-        gyr_0 = gyr_1;  
-     
+        dt = _dt;
+        acc_1 = _acc_1;
+        gyr_1 = _gyr_1;
+        sum_dt = next_sum_dt;
+        acc_0 = _acc_1;
+        gyr_0 = _gyr_1;
+        return true;
     }
 
     Eigen::Matrix<double, 15, 1> evaluate(const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi, const Eigen::Vector3d &Vi, const Eigen::Vector3d &Bai, const Eigen::Vector3d &Bgi,
@@ -293,6 +512,29 @@ class IntegrationBase
     bool usesEquivariantPreintegration() const
     {
         return use_equivariant;
+    }
+
+    bool isValidForFactor() const
+    {
+        return valid && sum_dt > 0.0 && std::isfinite(sum_dt) &&
+               delta_p.allFinite() && delta_q.coeffs().allFinite() &&
+               delta_v.allFinite() && covariance.allFinite();
+    }
+
+    void markInvalid()
+    {
+        if (valid)
+        {
+            valid = false;
+            ++revision_;
+        }
+    }
+
+    bool isValid() const { return valid; }
+
+    std::uint64_t revision() const
+    {
+        return revision_;
     }
 
     Eigen::Quaterniond correctedDeltaQ(const Eigen::Vector3d &ba,
@@ -361,6 +603,8 @@ class IntegrationBase
 
     const bool use_equivariant;
     std::unique_ptr<equivariant::Preintegration> equivariant_preintegration;
+    bool valid;
+    std::uint64_t revision_;
 
 };
 /*

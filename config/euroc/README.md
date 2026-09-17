@@ -4,10 +4,19 @@
 parameters used by the current estimator. Review topic names and output paths
 before running them against a ROS 2 EuRoC bag.
 
-The classic `acc_n`, `gyr_n`, `acc_w`, and `gyr_w` values are used by the
-original VINS midpoint covariance. The separately named `equivariant_*`
-parameters are interpreted as continuous-time densities by the Gal(3)
-implementation. Select the implementation with:
+In the in-progress v1.2 implementation, classic midpoint and Gal(3)
+preintegration both read `acc_n`, `gyr_n`, `acc_w`, and `gyr_w` as
+continuous-time densities. Each configuration must declare the semantics and
+the bias repropagation thresholds:
+
+```yaml
+imu_noise_semantics: "continuous_time_density"
+bias_acc_repropagation_threshold: 0.1
+bias_gyr_repropagation_threshold: 0.01
+```
+
+The former separately named `equivariant_*` noise parameters are no longer
+used. Select the implementation with:
 
 ```yaml
 equivariant_preintegration_enable: 0  # classic midpoint

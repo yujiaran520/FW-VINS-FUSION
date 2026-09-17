@@ -9,7 +9,7 @@
 
 #include "marginalization_factor.h"
 
-void ResidualBlockInfo::Evaluate()
+bool ResidualBlockInfo::Evaluate()
 {
     residuals.resize(cost_function->num_residuals());
     residuals.setZero();
@@ -27,8 +27,19 @@ void ResidualBlockInfo::Evaluate()
     }
     if (!cost_function->Evaluate(parameter_blocks.data(), residuals.data(), raw_jacobians))
     {
-        ROS_ERROR("factor evaluation failed during marginalization; dropping its contribution");
-        return;
+        ROS_ERROR("factor evaluation failed during marginalization");
+        return false;
+    }
+    bool finite = residuals.allFinite();
+    for (const auto &jacobian : jacobians)
+        finite = finite && jacobian.allFinite();
+    if (!finite)
+    {
+        ROS_ERROR("non-finite factor during marginalization");
+        residuals.setZero();
+        for (auto &jacobian : jacobians)
+            jacobian.setZero();
+        return false;
     }
 
     //std::vector<int> tmp_idx(block_sizes.size());
@@ -81,6 +92,12 @@ void ResidualBlockInfo::Evaluate()
 
         residuals *= residual_scaling_;
     }
+    if (!residuals.allFinite())
+        return false;
+    for (const auto &jacobian : jacobians)
+        if (!jacobian.allFinite())
+            return false;
+    return true;
 }
 
 MarginalizationInfo::~MarginalizationInfo()
@@ -89,7 +106,7 @@ MarginalizationInfo::~MarginalizationInfo()
     
     for (auto it = parameter_block_data.begin(); it != parameter_block_data.end(); ++it)
     {
-        delete it->second;
+        delete[] it->second;
         it->second = nullptr;
     }
     
@@ -102,6 +119,7 @@ MarginalizationInfo::~MarginalizationInfo()
         delete factors[i]->cost_function;
         factors[i]->cost_function = nullptr;
 
+        delete factors[i];
         factors[i] = nullptr;
     }
 }
@@ -127,11 +145,15 @@ void MarginalizationInfo::addResidualBlockInfo(ResidualBlockInfo *residual_block
     }
 }
 
-void MarginalizationInfo::preMarginalize()
+bool MarginalizationInfo::preMarginalize()
 {
     for (auto it : factors)
     {
-        it->Evaluate();
+        if (!it->Evaluate())
+        {
+            valid = false;
+            return false;
+        }
 
         std::vector<int> block_sizes = it->cost_function->parameter_block_sizes();
         for (int i = 0; i < static_cast<int>(block_sizes.size()); i++)
@@ -146,6 +168,7 @@ void MarginalizationInfo::preMarginalize()
             }
         }
     }
+    return true;
 }
 
 int MarginalizationInfo::localSize(int size) const
@@ -191,7 +214,7 @@ void* ThreadsConstructA(void* threadsstruct)
     return threadsstruct;
 }
 
-void MarginalizationInfo::marginalize()
+bool MarginalizationInfo::marginalize()
 {
     int pos = 0;
     for (auto &it : parameter_block_idx)
@@ -217,7 +240,7 @@ void MarginalizationInfo::marginalize()
     {
         valid = false;
         printf("unstable tracking...\n");
-        return;
+        return false;
     }
 
     TicToc t_summing;
@@ -264,6 +287,7 @@ void MarginalizationInfo::marginalize()
         i++;
         i = i % NUM_THREADS;
     }
+    bool thread_started[NUM_THREADS] = {};
     for (int i = 0; i < NUM_THREADS; i++)
     {
         TicToc zero_matrix;
@@ -275,12 +299,15 @@ void MarginalizationInfo::marginalize()
         if (ret != 0)
         {
             ROS_WARN("pthread_create error");
-            // ROS_BREAK();
+            ThreadsConstructA(static_cast<void *>(&(threadsstruct[i])));
         }
+        else
+            thread_started[i] = true;
     }
     for( int i = NUM_THREADS - 1; i >= 0; i--)  
     {
-        pthread_join( tids[i], NULL ); 
+        if (thread_started[i])
+            pthread_join(tids[i], NULL);
         A += threadsstruct[i].A;
         b += threadsstruct[i].b;
     }
@@ -291,6 +318,12 @@ void MarginalizationInfo::marginalize()
     //TODO
     Eigen::MatrixXd Amm = 0.5 * (A.block(0, 0, m, m) + A.block(0, 0, m, m).transpose());
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes(Amm);
+    if (!A.allFinite() || !b.allFinite() || saes.info() != Eigen::Success ||
+        !saes.eigenvalues().allFinite() || !saes.eigenvectors().allFinite())
+    {
+        valid = false;
+        return false;
+    }
 
     //ROS_ASSERT_MSG(saes.eigenvalues().minCoeff() >= -1e-4, "min eigenvalue %f", saes.eigenvalues().minCoeff());
 
@@ -306,6 +339,12 @@ void MarginalizationInfo::marginalize()
     b = brr - Arm * Amm_inv * bmm;
 
     Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes2(A);
+    if (!A.allFinite() || !b.allFinite() || saes2.info() != Eigen::Success ||
+        !saes2.eigenvalues().allFinite() || !saes2.eigenvectors().allFinite())
+    {
+        valid = false;
+        return false;
+    }
     Eigen::VectorXd S = Eigen::VectorXd((saes2.eigenvalues().array() > eps).select(saes2.eigenvalues().array(), 0));
     Eigen::VectorXd S_inv = Eigen::VectorXd((saes2.eigenvalues().array() > eps).select(saes2.eigenvalues().array().inverse(), 0));
 
@@ -314,11 +353,17 @@ void MarginalizationInfo::marginalize()
 
     linearized_jacobians = S_sqrt.asDiagonal() * saes2.eigenvectors().transpose();
     linearized_residuals = S_inv_sqrt.asDiagonal() * saes2.eigenvectors().transpose() * b;
+    if (!linearized_jacobians.allFinite() || !linearized_residuals.allFinite())
+    {
+        valid = false;
+        return false;
+    }
     //std::cout << A << std::endl
     //          << std::endl;
     //std::cout << linearized_jacobians << std::endl;
     //printf("error2: %f %f\n", (linearized_jacobians.transpose() * linearized_jacobians - A).sum(),
     //      (linearized_jacobians.transpose() * linearized_residuals - b).sum());
+    return true;
 }
 
 std::vector<double *> MarginalizationInfo::getParameterBlocks(std::unordered_map<long, double *> &addr_shift)

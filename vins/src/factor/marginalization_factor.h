@@ -29,9 +29,9 @@ const int NUM_THREADS = 4;
 struct ResidualBlockInfo
 {
     ResidualBlockInfo(ceres::CostFunction *_cost_function, ceres::LossFunction *_loss_function, std::vector<double *> _parameter_blocks, std::vector<int> _drop_set)
-        : cost_function(_cost_function), loss_function(_loss_function), parameter_blocks(_parameter_blocks), drop_set(_drop_set) {}
+        : cost_function(_cost_function), loss_function(_loss_function), parameter_blocks(_parameter_blocks), drop_set(_drop_set), raw_jacobians(nullptr) {}
 
-    void Evaluate();
+    bool Evaluate();
 
     ceres::CostFunction *cost_function;
     ceres::LossFunction *loss_function;
@@ -65,8 +65,8 @@ class MarginalizationInfo
     int localSize(int size) const;
     int globalSize(int size) const;
     void addResidualBlockInfo(ResidualBlockInfo *residual_block_info);
-    void preMarginalize();
-    void marginalize();
+    bool preMarginalize();
+    bool marginalize();
     std::vector<double *> getParameterBlocks(std::unordered_map<long, double *> &addr_shift);
 
     std::vector<ResidualBlockInfo *> factors;

@@ -11,14 +11,13 @@
 
 #include <ceres/internal/config.h>
 #include <opencv2/core/cuda.hpp>
+#include <cmath>
 #include <stdexcept>
 
 double INIT_DEPTH;
 double MIN_PARALLAX;
 double ACC_N, ACC_W;
 double GYR_N, GYR_W;
-double EQUIVARIANT_ACC_N, EQUIVARIANT_ACC_W;
-double EQUIVARIANT_GYR_N, EQUIVARIANT_GYR_W;
 int IMU_PREINTEGRATION_ENABLE = 0;
 
 std::vector<Eigen::Matrix3d> RIC;
@@ -30,8 +29,8 @@ int USE_GPU;
 int USE_GPU_ACC_FLOW;
 int USE_GPU_CERES;
 
-double BIAS_ACC_THRESHOLD;
-double BIAS_GYR_THRESHOLD;
+double BIAS_ACC_THRESHOLD = 0.1;
+double BIAS_GYR_THRESHOLD = 0.01;
 double SOLVER_TIME;
 int NUM_ITERATIONS;
 int ESTIMATE_EXTRINSIC;
@@ -146,25 +145,33 @@ void readParameters(std::string config_file)
         ACC_W = fsSettings["acc_w"];
         GYR_N = fsSettings["gyr_n"];
         GYR_W = fsSettings["gyr_w"];
-        EQUIVARIANT_ACC_N = ACC_N;
-        EQUIVARIANT_ACC_W = ACC_W;
-        EQUIVARIANT_GYR_N = GYR_N;
-        EQUIVARIANT_GYR_W = GYR_W;
-        const cv::FileNode equivariant_acc_n = fsSettings["equivariant_acc_noise_density"];
-        const cv::FileNode equivariant_gyr_n = fsSettings["equivariant_gyr_noise_density"];
-        const cv::FileNode equivariant_acc_w = fsSettings["equivariant_acc_bias_random_walk"];
-        const cv::FileNode equivariant_gyr_w = fsSettings["equivariant_gyr_bias_random_walk"];
-        if (!equivariant_acc_n.empty()) EQUIVARIANT_ACC_N = static_cast<double>(equivariant_acc_n);
-        if (!equivariant_gyr_n.empty()) EQUIVARIANT_GYR_N = static_cast<double>(equivariant_gyr_n);
-        if (!equivariant_acc_w.empty()) EQUIVARIANT_ACC_W = static_cast<double>(equivariant_acc_w);
-        if (!equivariant_gyr_w.empty()) EQUIVARIANT_GYR_W = static_cast<double>(equivariant_gyr_w);
-        if (IMU_PREINTEGRATION_ENABLE)
-        {
-            ROS_INFO("Equivariant noise densities acc=%g gyr=%g acc_bias=%g gyr_bias=%g",
-                     EQUIVARIANT_ACC_N, EQUIVARIANT_GYR_N,
-                     EQUIVARIANT_ACC_W, EQUIVARIANT_GYR_W);
-        }
+        std::string noise_semantics;
+        fsSettings["imu_noise_semantics"] >> noise_semantics;
+        if (noise_semantics != "continuous_time_density")
+            throw std::runtime_error(
+                "imu_noise_semantics must be continuous_time_density");
+        const auto valid_density = [](double value) {
+            return std::isfinite(value) && value > 0.0;
+        };
+        if (!valid_density(ACC_N) || !valid_density(GYR_N) ||
+            !valid_density(ACC_W) || !valid_density(GYR_W))
+            throw std::runtime_error(
+                "IMU noise densities must be finite and strictly positive");
+        ROS_INFO("Continuous IMU noise densities acc=%g gyr=%g acc_bias=%g gyr_bias=%g",
+                 ACC_N, GYR_N, ACC_W, GYR_W);
         G.z() = fsSettings["g_norm"];
+        const cv::FileNode bias_acc_node =
+            fsSettings["bias_acc_repropagation_threshold"];
+        const cv::FileNode bias_gyr_node =
+            fsSettings["bias_gyr_repropagation_threshold"];
+        if (!bias_acc_node.empty())
+            BIAS_ACC_THRESHOLD = static_cast<double>(bias_acc_node);
+        if (!bias_gyr_node.empty())
+            BIAS_GYR_THRESHOLD = static_cast<double>(bias_gyr_node);
+        if (!std::isfinite(BIAS_ACC_THRESHOLD) || BIAS_ACC_THRESHOLD <= 0.0 ||
+            !std::isfinite(BIAS_GYR_THRESHOLD) || BIAS_GYR_THRESHOLD <= 0.0)
+            throw std::runtime_error(
+                "bias repropagation thresholds must be finite and strictly positive");
     }
 
     SOLVER_TIME = fsSettings["max_solver_time"];
@@ -240,8 +247,6 @@ void readParameters(std::string config_file)
     }
 
     INIT_DEPTH = 5.0;
-    BIAS_ACC_THRESHOLD = 0.1;
-    BIAS_GYR_THRESHOLD = 0.1;
 
     TD = fsSettings["td"];
     ESTIMATE_TD = fsSettings["estimate_td"];

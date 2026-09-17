@@ -66,7 +66,8 @@ max_solver_time: 0.04
 max_num_iterations: 8
 keyframe_parallax: 10.0
 
-# 经典 VINS 中点预积分沿用的 IMU 噪声参数。
+# 经典与等变预积分统一使用连续时间噪声密度，并按实际 IMU dt 离散。
+imu_noise_semantics: "continuous_time_density"
 acc_n: 0.1
 gyr_n: 0.01
 acc_w: 0.001
@@ -75,11 +76,9 @@ gyr_w: 0.0001
 g_norm: 9.805
 # 等变 Gal(3) IMU 预积分；0 使用原始 VINS 中点预积分，1 启用等变预积分。
 equivariant_preintegration_enable: 0
-# 仅由等变预积分使用的连续时间噪声密度，避免与经典中点模型的离散参数语义混用。
-equivariant_acc_noise_density: 0.1
-equivariant_gyr_noise_density: 0.01
-equivariant_acc_bias_random_walk: 0.001
-equivariant_gyr_bias_random_walk: 0.0001
+# 优化偏置偏离线性化点超过阈值时，在边缘化前重传播。
+bias_acc_repropagation_threshold: 0.1
+bias_gyr_repropagation_threshold: 0.01
 
 # 在线估计相机与 IMU 的时间偏移；td 为初始时间差（秒）。
 estimate_td: 1

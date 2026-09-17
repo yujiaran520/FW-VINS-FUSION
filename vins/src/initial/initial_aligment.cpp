@@ -11,7 +11,7 @@
 
 #include "initial_alignment.h"
 
-void solveGyroscopeBias(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs)
+bool solveGyroscopeBias(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs)
 {
     Matrix3d A;
     Vector3d b;
@@ -59,14 +59,26 @@ void solveGyroscopeBias(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs)
     delta_bg = A.ldlt().solve(b);
     ROS_WARN("gyroscope bias initial calibration "); // << delta_bg.transpose());
 
-    for (int i = 0; i <= WINDOW_SIZE; i++)
-        Bgs[i] += delta_bg;
-
+    std::vector<std::pair<IntegrationBase *, std::unique_ptr<IntegrationBase>>> updates;
     for (frame_i = all_image_frame.begin(); next(frame_i) != all_image_frame.end( ); frame_i++)
     {
         frame_j = next(frame_i);
-        frame_j->second.pre_integration->repropagate(Vector3d::Zero(), Bgs[0]);
+        IntegrationBase *integration = frame_j->second.pre_integration;
+        if (!integration)
+            return false;
+        std::unique_ptr<IntegrationBase> candidate = integration->clone();
+        if (!candidate ||
+            !candidate->repropagate(Vector3d::Zero(), Bgs[0] + delta_bg))
+            return false;
+        updates.emplace_back(integration, std::move(candidate));
     }
+
+    for (auto &update : updates)
+        if (!update.first->commitFrom(*update.second))
+            return false;
+    for (int i = 0; i <= WINDOW_SIZE; i++)
+        Bgs[i] += delta_bg;
+    return true;
 }
 
 
@@ -231,7 +243,8 @@ bool LinearAlignment(map<double, ImageFrame> &all_image_frame, Vector3d &g, Vect
 
 bool VisualIMUAlignment(map<double, ImageFrame> &all_image_frame, Vector3d* Bgs, Vector3d &g, VectorXd &x)
 {
-    solveGyroscopeBias(all_image_frame, Bgs);
+    if (!solveGyroscopeBias(all_image_frame, Bgs))
+        return false;
 
     if(LinearAlignment(all_image_frame, g, x))
         return true;

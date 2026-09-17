@@ -60,22 +60,18 @@ max_solver_time: 0.04  # maximum solver time in seconds
 max_num_iterations: 8   # max solver itrations, to guarantee real time
 keyframe_parallax: 10.0 # keyframe selection threshold (pixel)
 
-#imu parameters       The more accurate parameters you provide, the better performance
-acc_n: 0.1          # accelerometer measurement noise standard deviation. 
-gyr_n: 0.01         # gyroscope measurement noise standard deviation.     
-acc_w: 0.001        # accelerometer bias random work noise standard deviation.  
-gyr_w: 0.0001       # gyroscope bias random work noise standard deviation.     
+# Both preintegration models use continuous-time densities and measured dt.
+imu_noise_semantics: "continuous_time_density"
+acc_n: 0.1
+gyr_n: 0.01
+acc_w: 0.001
+gyr_w: 0.0001
 g_norm: 9.81007     # gravity magnitude
 
 # Equivariant Gal(3) preintegration (0 keeps the original midpoint model).
-# The four equivariant values are continuous-time densities. They are kept at
-# the legacy comparison values here so saved experiments remain reproducible;
-# they are not semantically identical to the classic discrete covariance.
 equivariant_preintegration_enable: 0
-equivariant_acc_noise_density: 0.1
-equivariant_gyr_noise_density: 0.01
-equivariant_acc_bias_random_walk: 0.001
-equivariant_gyr_bias_random_walk: 0.0001
+bias_acc_repropagation_threshold: 0.1
+bias_gyr_repropagation_threshold: 0.01
 
 #unsynchronization parameters
 estimate_td: 0                      # online estimate time offset between camera and imu

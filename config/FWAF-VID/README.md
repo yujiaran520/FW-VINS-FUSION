@@ -21,20 +21,20 @@ The default is the original VINS midpoint preintegration:
 equivariant_preintegration_enable: 0
 ```
 
-Set the value to `1` to use Gal(3) equivariant preintegration. The equivariant
-implementation uses a left-endpoint zero-order hold for each IMU interval and
-separate continuous-time density parameters:
+Set the value to `1` to use Gal(3) equivariant preintegration. It uses a
+left-endpoint zero-order hold for each IMU interval. Both implementations use
+the same continuous-time density parameters:
 
 ```yaml
-equivariant_acc_noise_density: 0.1
-equivariant_gyr_noise_density: 0.01
-equivariant_acc_bias_random_walk: 0.001
-equivariant_gyr_bias_random_walk: 0.0001
+imu_noise_semantics: "continuous_time_density"
+acc_n: 0.1
+gyr_n: 0.01
+acc_w: 0.001
+gyr_w: 0.0001
 ```
 
-The classic `acc_n`, `gyr_n`, `acc_w`, and `gyr_w` parameters keep their
-original VINS semantics. Switching modes therefore does not reinterpret the
-legacy noise values.
+The densities are discretized using each measured IMU interval. The former
+`equivariant_*` noise keys are not used by v1.2.
 
 ## Run
 

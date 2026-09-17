@@ -536,14 +536,14 @@ void FeatureTracker::rejectWithF()
 
 void FeatureTracker::readIntrinsicParameter(const vector<string> &calib_file)
 {
+    m_camera.clear();
     for (size_t i = 0; i < calib_file.size(); i++)
     {
         ROS_INFO("reading paramerter of camera %s", calib_file[i].c_str());
         camodocal::CameraPtr camera = CameraFactory::instance()->generateCameraFromYamlFile(calib_file[i]);
         m_camera.push_back(camera);
     }
-    if (calib_file.size() == 2)
-        stereo_cam = 1;
+    stereo_cam = calib_file.size() == 2;
 }
 
 void FeatureTracker::showUndistortion(const string &name)

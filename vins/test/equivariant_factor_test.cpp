@@ -1,4 +1,5 @@
 #include "factor/imu_factor.h"
+#include "factor/marginalization_factor.h"
 
 #include <array>
 #include <chrono>
@@ -113,10 +114,6 @@ bool testMode(int mode)
     GYR_N = 0.01;
     ACC_W = 0.001;
     GYR_W = 0.0001;
-    EQUIVARIANT_ACC_N = 0.1;
-    EQUIVARIANT_GYR_N = 0.01;
-    EQUIVARIANT_ACC_W = 0.001;
-    EQUIVARIANT_GYR_W = 0.0001;
     G = Eigen::Vector3d(0.0, 0.0, 9.805);
 
     const Eigen::Vector3d ba(0.01, -0.02, 0.005);
@@ -161,6 +158,24 @@ bool testMode(int mode)
                                        zoh.delta_p, zoh.sum_dt);
         ok &= check(equivariant::Gal3::log(actual * expected.inverse()).norm() < 1e-12,
                     "equivariant interval uses left-endpoint ZOH measurement");
+
+        Eigen::Matrix3d propagated_R = Qi.toRotationMatrix();
+        Eigen::Vector3d propagated_V = Vi;
+        Eigen::Vector3d propagated_P = Pi;
+        ok &= check(equivariant::propagateWorldStateZoh(
+                        0.02, acc, gyro, ba, bg, G,
+                        propagated_R, propagated_V, propagated_P),
+                    "world-state ZOH propagation succeeds");
+        const Eigen::Matrix3d expected_R = Qi.toRotationMatrix() * expected.R();
+        const Eigen::Vector3d expected_V =
+            Vi + Qi.toRotationMatrix() * expected.v() - G * 0.02;
+        const Eigen::Vector3d expected_P =
+            Pi + Vi * 0.02 + Qi.toRotationMatrix() * expected.p() -
+            0.5 * G * 0.02 * 0.02;
+        ok &= check((propagated_R - expected_R).norm() < 1e-12 &&
+                        (propagated_V - expected_V).norm() < 1e-12 &&
+                        (propagated_P - expected_P).norm() < 1e-12,
+                    "world-state prediction matches Gal3 preintegration ZOH");
     }
 
     double pose_i[7];
@@ -226,12 +241,118 @@ bool testMode(int mode)
     }
     std::cout << (mode ? "Equivariant" : "Classic")
               << " IMU factor evaluation: " << elapsed << " ms" << std::endl;
+
+    const std::uint64_t cached_revision = preintegration.revision();
+    ok &= check(preintegration.repropagate(
+                    ba + Eigen::Vector3d(0.002, -0.001, 0.0015),
+                    bg + Eigen::Vector3d(0.0002, -0.0001, 0.00015)),
+                "bias repropagation succeeds");
+    ok &= check(preintegration.revision() == cached_revision + 1,
+                "bias repropagation advances revision");
+    ok &= check(!factor.Evaluate(parameters, residuals, jacobians),
+                "factor cache rejects a changed preintegration revision");
+    IMUFactor refreshed_factor(&preintegration);
+    ok &= check(refreshed_factor.Evaluate(parameters, residuals, jacobians),
+                "factor cache refreshes after bias repropagation");
+    const std::uint64_t refreshed_revision = preintegration.revision();
+    preintegration.markInvalid();
+    ok &= check(preintegration.revision() == refreshed_revision + 1 &&
+                    !refreshed_factor.Evaluate(parameters, residuals, jacobians),
+                "invalidating preintegration invalidates an existing factor cache");
+    return ok;
+}
+
+bool testClassicNoiseAndAtomicFailure()
+{
+    IMU_PREINTEGRATION_ENABLE = 0;
+    ACC_N = 0.1;
+    GYR_N = 0.01;
+    ACC_W = 0.001;
+    GYR_W = 0.0001;
+    const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
+    constexpr double dt = 0.02;
+
+    IntegrationBase one_step(zero, zero, zero, zero);
+    bool ok = check(one_step.push_back(dt, zero, zero),
+                    "classic one-step propagation succeeds");
+    ok &= check((one_step.covariance.block<3, 3>(O_R, O_R) -
+                 GYR_N * GYR_N * dt * Eigen::Matrix3d::Identity()).norm() < 1e-15,
+                "classic gyroscope density has continuous-time dt scaling");
+    ok &= check((one_step.covariance.block<3, 3>(O_V, O_V) -
+                 ACC_N * ACC_N * dt * Eigen::Matrix3d::Identity()).norm() < 1e-15,
+                "classic accelerometer density has continuous-time dt scaling");
+    ok &= check((one_step.covariance.block<3, 3>(O_BA, O_BA) -
+                 ACC_W * ACC_W * dt * Eigen::Matrix3d::Identity()).norm() < 1e-15,
+                "classic accelerometer random walk uses density dt scaling");
+    ok &= check((one_step.covariance.block<3, 3>(O_BG, O_BG) -
+                 GYR_W * GYR_W * dt * Eigen::Matrix3d::Identity()).norm() < 1e-15,
+                "classic gyroscope random walk uses density dt scaling");
+
+    IntegrationBase::Checkpoint checkpoint = one_step.checkpoint();
+    ok &= check(one_step.push_back(dt, Eigen::Vector3d::Ones(),
+                                   Eigen::Vector3d::Ones()),
+                "candidate propagation succeeds before rollback");
+    one_step.restore(std::move(checkpoint));
+    ok &= check(one_step.sum_dt == dt && one_step.dt_buf.size() == 1 &&
+                    one_step.revision() == 1,
+                "propagation checkpoint restores interval atomically");
+
+    const Eigen::Vector3d delta_p = one_step.delta_p;
+    const Eigen::Quaterniond delta_q = one_step.delta_q;
+    const Eigen::Vector3d delta_v = one_step.delta_v;
+    const auto covariance = one_step.covariance;
+    const auto jacobian = one_step.jacobian;
+    const double sum_dt = one_step.sum_dt;
+    const std::uint64_t revision = one_step.revision();
+    const std::size_t sample_count = one_step.dt_buf.size();
+    Eigen::Vector3d invalid = zero;
+    invalid.x() = std::numeric_limits<double>::quiet_NaN();
+    ok &= check(!one_step.push_back(dt, invalid, zero),
+                "non-finite IMU sample is rejected");
+    ok &= check((one_step.delta_p - delta_p).norm() == 0.0 &&
+                    one_step.delta_q.coeffs().isApprox(delta_q.coeffs(), 0.0) &&
+                    (one_step.delta_v - delta_v).norm() == 0.0 &&
+                    one_step.covariance.isApprox(covariance, 0.0) &&
+                    one_step.jacobian.isApprox(jacobian, 0.0) &&
+                    one_step.sum_dt == sum_dt &&
+                    one_step.revision() == revision &&
+                    one_step.dt_buf.size() == sample_count,
+                "failed propagation leaves accumulated state and buffers unchanged");
+    return ok;
+}
+
+class FailingFactor : public ceres::SizedCostFunction<1, 1>
+{
+  public:
+    bool Evaluate(double const *const *, double *, double **) const override
+    {
+        return false;
+    }
+};
+
+bool testMarginalizationFailurePropagation()
+{
+    double parameter = 0.0;
+    MarginalizationInfo evaluation_failure;
+    evaluation_failure.addResidualBlockInfo(new ResidualBlockInfo(
+        new FailingFactor(), nullptr, std::vector<double *>{&parameter},
+        std::vector<int>{0}));
+    bool ok = check(!evaluation_failure.preMarginalize() &&
+                        !evaluation_failure.valid,
+                    "factor failure aborts marginalization");
+
+    MarginalizationInfo empty_marginalization;
+    ok &= check(!empty_marginalization.marginalize() &&
+                    !empty_marginalization.valid,
+                "invalid Schur marginalization is reported");
     return ok;
 }
 } // namespace
 
 int main()
 {
-    const bool ok = testMode(0) && testMode(1);
+    const bool ok = testMode(0) && testMode(1) &&
+                    testClassicNoiseAndAtomicFailure() &&
+                    testMarginalizationFailurePropagation();
     return ok ? 0 : 1;
 }

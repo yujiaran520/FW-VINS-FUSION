@@ -39,8 +39,6 @@ extern int USE_GPU_CERES;
 
 extern double ACC_N, ACC_W;
 extern double GYR_N, GYR_W;
-extern double EQUIVARIANT_ACC_N, EQUIVARIANT_ACC_W;
-extern double EQUIVARIANT_GYR_N, EQUIVARIANT_GYR_W;
 extern int IMU_PREINTEGRATION_ENABLE;
 
 extern std::vector<Eigen::Matrix3d> RIC;

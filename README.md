@@ -5,9 +5,9 @@ FW-VINS-FUSION（Flapping-Wing VINS-Fusion）是面向**扑翼飞行机器人飞
 [VINS-Fusion](https://github.com/HKUST-Aerial-Robotics/VINS-Fusion) 及其 ROS 2
 移植版本开发，因此命名为 **FW-VINS-FUSION**。
 
-> **开发状态：本项目正在持续改进，目前仅完成 Gal(3) 等变 IMU 预积分这一项
-> 算法改进。现有代码和实验结果仅供学习、研究与方案参考，不代表最终版本，
-> 不建议直接用于生产环境或安全关键飞行任务。**
+> **开发状态：当前代码为 v1.2 改进中的阶段版本，核心工作仍聚焦 Gal(3)
+> 等变 IMU 预积分及其工程鲁棒性，尚不是最终稳定版。现有代码和实验结果仅供
+> 学习、研究与方案参考，不建议直接用于生产环境或安全关键飞行任务。**
 
 ## 当前改进
 
@@ -26,6 +26,34 @@ equivariant_preintegration_enable: 1
 Biases: A Galilean Group Approach*（IEEE Robotics and Automation Letters，
 2025），使用 Eigen 独立实现，不依赖额外李群库。
 
+### 版本变化
+
+- **v0**：原始 VINS-Fusion 经典中点 IMU 预积分，作为对照基线。
+- **v1.0**：引入 Gal(3) 等变 IMU 预积分，偏置相关雅可比采用中心差分计算。
+- **v1.1**：将等变因子的关键雅可比替换为解析实现，保留 v1.0 的预积分模型。
+- **v1.2（改进中）**：统一经典与等变路径的连续时间噪声密度语义；修正图像时间
+  边界的左端零阶保持；加入有界偏置重传播与重求解、预积分原子提交和回滚、因子
+  revision/缓存失效检查，以及求解、传播和边缘化失败保护。当前仍在继续改进初始化
+  尺度稳定性、困难序列精度和尾延迟，不应视为最终发布结论。
+
+v1.2 的 IMU 配置必须明确声明统一噪声语义：
+
+```yaml
+imu_noise_semantics: "continuous_time_density"
+acc_n: 0.1
+gyr_n: 0.01
+acc_w: 0.001
+gyr_w: 0.0001
+
+# 触发偏置重传播的阈值
+bias_acc_repropagation_threshold: 0.1
+bias_gyr_repropagation_threshold: 0.01
+```
+
+经典中点与 Gal(3) 路径现在共同读取上述四个噪声密度，并按每个实际 IMU 时间间隔
+离散化。v1.1 使用的 `equivariant_*` 独立噪声键在 v1.2 中不再读取；自定义配置文件
+也需要同步迁移。
+
 ### 潜在优势
 
 - 在 Gal(3) 李群上统一表示和更新姿态、速度、位置及时间增量，更好地保留状态的
@@ -34,8 +62,8 @@ Biases: A Galilean Group Approach*（IEEE Robotics and Automation Letters，
   使用一致的数学框架。
 - 对坐标系变换具有等变结构，理论上有助于降低线性化结果对参考坐标选择的敏感性，
   改善估计一致性。
-- 单独配置连续时间陀螺仪、加速度计噪声密度及偏置随机游走参数，避免切换预积分
-  模型时误用原始 VINS 参数的离散噪声语义。
+- 经典与等变路径共享明确的连续时间噪声密度语义，避免切换模型时使用两套不一致的
+  参数解释。
 - 面向扑翼机器人可能出现的快速姿态变化、高动态运动和周期性机体振动，该几何建模
   方式具有进一步研究鲁棒性和一致性的潜力。
 

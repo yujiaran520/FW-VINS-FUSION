@@ -8,6 +8,10 @@
  * Independent implementation of the Gal(3) preintegration equations in:
  * G. Delama et al., "Equivariant IMU Preintegration With Biases:
  * A Galilean Group Approach," IEEE RA-L, 2025.
+ *
+ * Version history: v1.0 introduced Gal(3) equivariant preintegration with
+ * numerical factor Jacobians; v1.1 replaced those Jacobians analytically;
+ * v1.2 keeps the model and unifies its ZOH propagation and noise semantics.
  *******************************************************/
 
 #pragma once
@@ -263,6 +267,39 @@ class Gal3
     Eigen::Vector3d p_;
     double s_;
 };
+
+inline bool propagateWorldStateZoh(
+    double dt, const Eigen::Vector3d &left_acc,
+    const Eigen::Vector3d &left_gyro, const Eigen::Vector3d &ba,
+    const Eigen::Vector3d &bg, const Eigen::Vector3d &gravity,
+    Eigen::Matrix3d &R, Eigen::Vector3d &V, Eigen::Vector3d &P)
+{
+    if (!std::isfinite(dt) || dt <= 0.0 || !left_acc.allFinite() ||
+        !left_gyro.allFinite() || !ba.allFinite() || !bg.allFinite() ||
+        !gravity.allFinite() || !R.allFinite() || !V.allFinite() ||
+        !P.allFinite())
+        return false;
+
+    Gal3::Vec10 input = Gal3::Vec10::Zero();
+    input.segment<3>(0) = left_gyro - bg;
+    input.segment<3>(3) = left_acc - ba;
+    input(9) = 1.0;
+    const Gal3 delta = Gal3::exp(input * dt);
+    const Eigen::Matrix3d R0 = R;
+    const Eigen::Vector3d V0 = V;
+    const Eigen::Vector3d P0 = P;
+    const Eigen::Matrix3d next_R = R0 * delta.R();
+    const Eigen::Vector3d next_V = V0 + R0 * delta.v() - gravity * dt;
+    const Eigen::Vector3d next_P = P0 + V0 * dt + R0 * delta.p() -
+                                   0.5 * gravity * dt * dt;
+    if (!next_R.allFinite() || !next_V.allFinite() || !next_P.allFinite())
+        return false;
+
+    R = next_R;
+    V = next_V;
+    P = next_P;
+    return true;
+}
 
 class Preintegration
 {

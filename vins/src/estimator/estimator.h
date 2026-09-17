@@ -55,8 +55,10 @@ class Estimator
     void inputIMU(double t, const Vector3d &linearAcceleration, const Vector3d &angularVelocity);
     void inputFeature(double t, const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &featureFrame);
     void inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1 = cv::Mat());
-    void processIMU(double t, double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity);
-    void processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const double header);
+    bool processIMU(double t, double dt, const Vector3d &linear_acceleration,
+                    const Vector3d &angular_velocity,
+                    bool advance_held_measurement = true);
+    bool processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const double header);
     void processMeasurements();
     void changeSensorType(int use_imu, int use_stereo);
 
@@ -65,10 +67,12 @@ class Estimator
     bool initialStructure();
     bool visualInitialAlign();
     bool relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l);
-    void slideWindow();
+    bool slideWindow();
     void slideWindowNew();
     void slideWindowOld();
-    void optimization();
+    bool optimization();
+    bool optimizationWithBiasRetry(int retries_remaining);
+    bool repropagateImuPreintegrations(bool &repropagated);
     void vector2double();
     void double2vector();
     bool failureDetection();
@@ -101,19 +105,21 @@ class Estimator
     std::mutex mProcess;
     std::mutex mBuf;
     std::mutex mPropagate;
+    std::mutex mTracker;
     queue<pair<double, Eigen::Vector3d>> accBuf;
     queue<pair<double, Eigen::Vector3d>> gyrBuf;
-    queue<pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > > featureBuf;
+    queue<pair<uint64_t, pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > > > featureBuf;
     double prevTime, curTime;
     bool openExEstimation;
 
     std::thread trackThread;
     std::thread processThread;
     std::atomic<bool> processThreadRunning;
+    std::atomic<uint64_t> resetGeneration;
 
     FeatureTracker featureTracker;
 
-    SolverFlag solver_flag;
+    std::atomic<SolverFlag> solver_flag;
     MarginalizationFlag  marginalization_flag;
     Vector3d g;
 

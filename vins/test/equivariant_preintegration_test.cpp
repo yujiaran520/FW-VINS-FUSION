@@ -203,6 +203,23 @@ bool testPreintegration()
                 eigensolver.eigenvalues().minCoeff() > -1e-12,
                 "preintegration covariance positive semidefinite");
 
+    const Eigen::Vector3d next_acc(-1.2, 0.7, 8.9);
+    const Eigen::Vector3d next_gyro(-0.3, 0.2, 0.15);
+    Preintegration uninterrupted(0.01, 0.1, 0.0001, 0.001, bias);
+    Preintegration before_image(0.01, 0.1, 0.0001, 0.001, bias);
+    Preintegration after_image(0.01, 0.1, 0.0001, 0.001, bias);
+    ok &= check(uninterrupted.integrate(acc, gyro, 0.02) &&
+                    uninterrupted.integrate(next_acc, next_gyro, 0.02),
+                "uninterrupted ZOH propagation across image time");
+    ok &= check(before_image.integrate(acc, gyro, 0.015) &&
+                    after_image.integrate(acc, gyro, 0.005) &&
+                    after_image.integrate(next_acc, next_gyro, 0.02),
+                "split ZOH propagation keeps the previous sample until its timestamp");
+    const Gal3 split_at_image = before_image.upsilon() * after_image.upsilon();
+    ok &= check(Gal3::log(
+                    split_at_image * uninterrupted.upsilon().inverse()).norm() < 1e-12,
+                "non-aligned image boundary preserves ZOH propagation");
+
     const double step_dt = 0.01;
     const double gyro_density = 0.02;
     const double acc_density = 0.2;
