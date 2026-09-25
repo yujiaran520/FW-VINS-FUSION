@@ -9,6 +9,21 @@ FW-VINS-FUSION（Flapping-Wing VINS-Fusion）是面向**扑翼飞行机器人飞
 > 等变 IMU 预积分及其工程鲁棒性，尚不是最终稳定版。现有代码和实验结果仅供
 > 学习、研究与方案参考，不建议直接用于生产环境或安全关键飞行任务。**
 
+## 版本与分支
+
+| 分支 | 定位 | 使用场景 |
+| --- | --- | --- |
+| [`V0`](https://github.com/yujiaran520/FW-VINS-FUSION/tree/V0) | 上游 ROS 2 经典中点基线 | 原始版本对照 |
+| [`V0.1`](https://github.com/yujiaran520/FW-VINS-FUSION/tree/V0.1) | **经典中点工程过渡版**：内联 FWAF 标定、IMU 密度、OpenCV GPU 前端、诊断和评价脚本 | 在 V0 与等变预积分研究之间复现单/双目 FWAF 实验 |
+| [`V1.1`](https://github.com/yujiaran520/FW-VINS-FUSION/tree/V1.1) | Gal(3) 等变预积分研究版本 | 解析雅可比对照 |
+| [`V1.2`](https://github.com/yujiaran520/FW-VINS-FUSION/tree/V1.2) / `main` | **当前默认开发版本**，可选择经典或等变预积分 | 继续开展等变模型稳定性研究 |
+
+`V1.0` 是项目历史开发阶段，仓库当前未单独发布 `V1.0` 远程分支。
+要使用可直接调参的经典中点 V0.1，需 `git switch V0.1`，并参阅该分支的
+[完整构建、标定与 FWAF 评价说明](https://github.com/yujiaran520/FW-VINS-FUSION/blob/V0.1/README.md)。
+**不要把 V0.1 的 `imu_noise_is_density` 三轴配置直接交给本分支的
+`imu_noise_semantics` 标量解析器运行；两个分支的配置语义和代码不同。**
+
 ## 当前改进
 
 目前实现了可选的 **Gal(3) 等变 IMU 预积分**，并保留原始 VINS-Fusion
@@ -29,6 +44,9 @@ Biases: A Galilean Group Approach*（IEEE Robotics and Automation Letters，
 ### 版本变化
 
 - **v0**：原始 VINS-Fusion 经典中点 IMU 预积分，作为对照基线。
+- **v0.1**：不引入 Gal(3)，先修正 FWAF 相机/IMU 标定与噪声消费链，
+  提供经典中点基线的 OpenCV CUDA、逐帧诊断、全序列批处理与独立参考评估。
+  具体 YAML、脚本和数据质量限制均在 [`V0.1` 分支](https://github.com/yujiaran520/FW-VINS-FUSION/tree/V0.1)。
 - **v1.0**：引入 Gal(3) 等变 IMU 预积分，偏置相关雅可比采用中心差分计算。
 - **v1.1**：将等变因子的关键雅可比替换为解析实现，保留 v1.0 的预积分模型。
 - **v1.2（改进中）**：统一经典与等变路径的连续时间噪声密度语义；修正图像时间
