@@ -1,0 +1,23 @@
+sequence,duration_s,left_images,right_images,camera_imu,mavros_imu,reference,quality
+Indoor_13,17.557,526,526,3517,877,UWB pos_3d,contains large jumps
+Indoor_14,36.305,1088,1088,7273,1809,UWB pos_3d,contains large jumps
+Indoor_15,29.327,880,880,0,1465,UWB pos_3d,contains large jumps
+Indoor_16,13.410,403,403,0,669,UWB pos_3d; MAVROS IMU fallback,contains large jumps
+Indoor_17,14.609,439,439,0,730,UWB pos_3d,contains large jumps
+Outdoor_01,156.418,4690,4690,31321,7801,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_02,150.352,4507,4507,30104,7496,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_03,197.453,5920,5920,39536,9846,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_04,159.844,4792,4792,32003,7975,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_05,155.821,4672,4672,31202,7780,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_06,125.826,3773,3773,25191,6278,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_07,59.487,1784,1784,11910,2967,GNSS ENU + MAVROS attitude,not RTK fixed; partial attitude overlap
+Outdoor_08,41.067,1232,1232,8224,2049,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_09,26.226,787,787,5249,1310,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_10,31.476,944,944,6299,1572,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_11,34.351,1030,1030,6879,1715,GNSS ENU + MAVROS attitude,not RTK fixed
+Outdoor_12,69.462,2082,2082,13909,3466,GNSS ENU + MAVROS attitude,not RTK fixed
+Static_flapping_18,92.731,2775,2775,18289,0,none,no GNSS or UWB pose topic
+Static_flapping_19,92.516,2769,2769,18389,0,none,no GNSS or UWB pose topic
+Static_flapping_20,118.244,3540,3540,23422,0,none,no GNSS or UWB pose topic
+static_flapping_03,75.079,2251,2251,15040,0,none,no GNSS or UWB pose topic
+static_flapping_04,84.692,2539,2539,16963,0,none,no GNSS or UWB pose topic

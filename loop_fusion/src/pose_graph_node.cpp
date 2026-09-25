@@ -59,6 +59,7 @@ int VISUALIZATION_SHIFT_X;
 int VISUALIZATION_SHIFT_Y;
 int ROW;
 int COL;
+double FOCAL_LENGTH = 460.0;
 int DEBUG_IMAGE;
 
 camodocal::CameraPtr m_camera;
@@ -444,6 +445,8 @@ int main(int argc, char **argv)
 
     ROW = fsSettings["image_height"];
     COL = fsSettings["image_width"];
+    cv::FileNode focalLengthNode = fsSettings["focal_length"];
+    FOCAL_LENGTH = focalLengthNode.empty() ? 460.0 : static_cast<double>(focalLengthNode);
 
     // referred from: https://answers.ros.org/question/288501/ros2-equivalent-of-rospackagegetpath/
     std::string pkg_path = ament_index_cpp::get_package_share_directory("loop_fusion");

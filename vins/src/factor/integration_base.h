@@ -28,12 +28,12 @@ class IntegrationBase
 
     {
         noise = Eigen::Matrix<double, 18, 18>::Zero();
-        noise.block<3, 3>(0, 0) =  (ACC_N * ACC_N) * Eigen::Matrix3d::Identity();
-        noise.block<3, 3>(3, 3) =  (GYR_N * GYR_N) * Eigen::Matrix3d::Identity();
-        noise.block<3, 3>(6, 6) =  (ACC_N * ACC_N) * Eigen::Matrix3d::Identity();
-        noise.block<3, 3>(9, 9) =  (GYR_N * GYR_N) * Eigen::Matrix3d::Identity();
-        noise.block<3, 3>(12, 12) =  (ACC_W * ACC_W) * Eigen::Matrix3d::Identity();
-        noise.block<3, 3>(15, 15) =  (GYR_W * GYR_W) * Eigen::Matrix3d::Identity();
+        noise.block<3, 3>(0, 0) = ACC_N.array().square().matrix().asDiagonal();
+        noise.block<3, 3>(3, 3) = GYR_N.array().square().matrix().asDiagonal();
+        noise.block<3, 3>(6, 6) = ACC_N.array().square().matrix().asDiagonal();
+        noise.block<3, 3>(9, 9) = GYR_N.array().square().matrix().asDiagonal();
+        noise.block<3, 3>(12, 12) = ACC_W.array().square().matrix().asDiagonal();
+        noise.block<3, 3>(15, 15) = GYR_W.array().square().matrix().asDiagonal();
     }
 
     void push_back(double dt, const Eigen::Vector3d &acc, const Eigen::Vector3d &gyr)
@@ -131,13 +131,28 @@ class IntegrationBase
             //step_jacobian = F;
             //step_V = V;
             jacobian = F * jacobian;
-            covariance = F * covariance * F.transpose() + V * noise * V.transpose();
+            Eigen::Matrix<double, 18, 18> step_noise = noise;
+            if (IMU_NOISE_IS_DENSITY)
+            {
+                // Each midpoint endpoint has a 0.5 weight, so the two independent
+                // measurement blocks each receive 2/dt. Bias driving noise uses 1/dt.
+                const double measurement_scale = 2.0 / _dt;
+                const double random_walk_scale = 1.0 / _dt;
+                step_noise.block<12, 12>(0, 0) *= measurement_scale;
+                step_noise.block<6, 6>(12, 12) *= random_walk_scale;
+            }
+            covariance = F * covariance * F.transpose() + V * step_noise * V.transpose();
         }
 
     }
 
     void propagate(double _dt, const Eigen::Vector3d &_acc_1, const Eigen::Vector3d &_gyr_1)
     {
+        if (!std::isfinite(_dt) || _dt <= 0.0)
+        {
+            ROS_WARN("ignore invalid IMU interval dt=%f", _dt);
+            return;
+        }
         dt = _dt;
         acc_1 = _acc_1;
         gyr_1 = _gyr_1;

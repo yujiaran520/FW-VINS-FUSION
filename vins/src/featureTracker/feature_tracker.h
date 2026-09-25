@@ -11,9 +11,6 @@
 
 #pragma once
 
-#define GPU_MODE 0
-
-
 #include <cstdio>
 #include <iostream>
 #include <queue>
@@ -22,11 +19,9 @@
 #include <opencv2/opencv.hpp>
 #include <eigen3/Eigen/Dense>
 
-// #ifdef GPU_MODE
-// #include <opencv2/cudaoptflow.hpp>
-// #include <opencv2/cudaimgproc.hpp>
-// #include <opencv2/cudaarithm.hpp>
-// #endif
+#include <opencv2/cudaoptflow.hpp>
+#include <opencv2/cudaimgproc.hpp>
+#include <opencv2/cudaarithm.hpp>
 
 #include "camodocal/camera_models/CameraFactory.h"
 #include "camodocal/camera_models/CataCamera.h"
@@ -52,6 +47,7 @@ class FeatureTracker
 {
 public:
     FeatureTracker();
+    void reset();
     map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> trackImage(double _cur_time, const cv::Mat &_img, const cv::Mat &_img1 = cv::Mat());
     void setMask();
     void addPoints();

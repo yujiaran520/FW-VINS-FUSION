@@ -50,6 +50,22 @@ void registerPub(rclcpp::Node::SharedPtr n)
     cameraposevisual.setLineWidth(0.01);
 }
 
+void unregisterPub()
+{
+    pub_latest_odometry.reset();
+    pub_path.reset();
+    pub_odometry.reset();
+    pub_point_cloud.reset();
+    pub_margin_cloud.reset();
+    pub_key_poses.reset();
+    pub_camera_pose.reset();
+    pub_camera_pose_visual.reset();
+    pub_keyframe_pose.reset();
+    pub_keyframe_point.reset();
+    pub_extrinsic.reset();
+    pub_image_track.reset();
+}
+
 void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, const Eigen::Vector3d &V, double t)
 {
     nav_msgs::msg::Odometry odometry;
@@ -166,7 +182,7 @@ void pubOdometry(const Estimator &estimator, const std_msgs::msg::Header &header
         // write result to file
         ofstream foutC(VINS_RESULT_PATH, ios::app);
         foutC.setf(ios::fixed, ios::floatfield);
-        foutC.precision(0);
+        foutC.precision(9);
         foutC << header.stamp.sec + header.stamp.nanosec * (1e-9) << ",";
         foutC.precision(5);
         foutC << estimator.Ps[WINDOW_SIZE].x() << ","

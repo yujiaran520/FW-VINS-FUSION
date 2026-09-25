@@ -48,6 +48,38 @@ void reduceVector(vector<int> &v, vector<uchar> status)
 FeatureTracker::FeatureTracker()
 {
     stereo_cam = 0;
+    reset();
+}
+
+void FeatureTracker::reset()
+{
+    row = 0;
+    col = 0;
+    imTrack.release();
+    mask.release();
+    prev_img.release();
+    cur_img.release();
+    n_pts.clear();
+    predict_pts.clear();
+    predict_pts_debug.clear();
+    prev_pts.clear();
+    cur_pts.clear();
+    cur_right_pts.clear();
+    prev_un_pts.clear();
+    cur_un_pts.clear();
+    cur_un_right_pts.clear();
+    pts_velocity.clear();
+    right_pts_velocity.clear();
+    ids.clear();
+    ids_right.clear();
+    track_cnt.clear();
+    cur_un_pts_map.clear();
+    prev_un_pts_map.clear();
+    cur_un_right_pts_map.clear();
+    prev_un_right_pts_map.clear();
+    prevLeftPtsMap.clear();
+    cur_time = 0.0;
+    prev_time = 0.0;
     n_id = 0;
     hasPrediction = false;
 }
@@ -103,6 +135,11 @@ double FeatureTracker::distance(cv::Point2f &pt1, cv::Point2f &pt2)
 
 map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackImage(double _cur_time, const cv::Mat &_img, const cv::Mat &_img1)
 {
+    if (_img.empty())
+        throw std::runtime_error("left image is empty");
+    if (!_img1.empty() && _img1.size() != _img.size())
+        throw std::runtime_error("left and right image sizes do not match");
+
     TicToc t_r;
     cur_time = _cur_time;
     cur_img = _img;
@@ -164,7 +201,90 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
             }
             // printf("temporal optical flow costs: %fms\n", t_o.toc());
         }
-        // GPU mode disabled - using CPU version instead
+        else
+        {
+            TicToc t_og;
+            cv::cuda::GpuMat prev_gpu_img(prev_img);
+            cv::cuda::GpuMat cur_gpu_img(cur_img);
+            cv::cuda::GpuMat prev_gpu_pts(prev_pts);
+            cv::cuda::GpuMat cur_gpu_pts(cur_pts);
+            cv::cuda::GpuMat gpu_status;
+            if(hasPrediction)
+            {
+                cur_gpu_pts = cv::cuda::GpuMat(predict_pts);
+                cv::Ptr<cv::cuda::SparsePyrLKOpticalFlow> d_pyrLK_sparse = cv::cuda::SparsePyrLKOpticalFlow::create(
+                cv::Size(21, 21), 1, 30, true);
+                d_pyrLK_sparse->calc(prev_gpu_img, cur_gpu_img, prev_gpu_pts, cur_gpu_pts, gpu_status);
+
+                vector<cv::Point2f> tmp_cur_pts(cur_gpu_pts.cols);
+                cur_gpu_pts.download(tmp_cur_pts);
+                cur_pts = tmp_cur_pts;
+
+                vector<uchar> tmp_status(gpu_status.cols);
+                gpu_status.download(tmp_status);
+                status = tmp_status;
+
+                int succ_num = 0;
+                for (size_t i = 0; i < tmp_status.size(); i++)
+                {
+                    if (tmp_status[i])
+                        succ_num++;
+                }
+                if (succ_num < 10)
+                {
+                    cv::Ptr<cv::cuda::SparsePyrLKOpticalFlow> d_pyrLK_sparse = cv::cuda::SparsePyrLKOpticalFlow::create(
+                    cv::Size(21, 21), 3, 30, false);
+                    d_pyrLK_sparse->calc(prev_gpu_img, cur_gpu_img, prev_gpu_pts, cur_gpu_pts, gpu_status);
+
+                    vector<cv::Point2f> tmp1_cur_pts(cur_gpu_pts.cols);
+                    cur_gpu_pts.download(tmp1_cur_pts);
+                    cur_pts = tmp1_cur_pts;
+
+                    vector<uchar> tmp1_status(gpu_status.cols);
+                    gpu_status.download(tmp1_status);
+                    status = tmp1_status;
+                }
+            }
+            else
+            {
+                cv::Ptr<cv::cuda::SparsePyrLKOpticalFlow> d_pyrLK_sparse = cv::cuda::SparsePyrLKOpticalFlow::create(
+                cv::Size(21, 21), 3, 30, false);
+                d_pyrLK_sparse->calc(prev_gpu_img, cur_gpu_img, prev_gpu_pts, cur_gpu_pts, gpu_status);
+
+                vector<cv::Point2f> tmp1_cur_pts(cur_gpu_pts.cols);
+                cur_gpu_pts.download(tmp1_cur_pts);
+                cur_pts = tmp1_cur_pts;
+
+                vector<uchar> tmp1_status(gpu_status.cols);
+                gpu_status.download(tmp1_status);
+                status = tmp1_status;
+            }
+            if(FLOW_BACK)
+            {
+                cv::cuda::GpuMat reverse_gpu_status;
+                cv::cuda::GpuMat reverse_gpu_pts = prev_gpu_pts;
+                cv::Ptr<cv::cuda::SparsePyrLKOpticalFlow> d_pyrLK_sparse = cv::cuda::SparsePyrLKOpticalFlow::create(
+                cv::Size(21, 21), 1, 30, true);
+                d_pyrLK_sparse->calc(cur_gpu_img, prev_gpu_img, cur_gpu_pts, reverse_gpu_pts, reverse_gpu_status);
+
+                vector<cv::Point2f> reverse_pts(reverse_gpu_pts.cols);
+                reverse_gpu_pts.download(reverse_pts);
+
+                vector<uchar> reverse_status(reverse_gpu_status.cols);
+                reverse_gpu_status.download(reverse_status);
+
+                for(size_t i = 0; i < status.size(); i++)
+                {
+                    if(status[i] && reverse_status[i] && distance(prev_pts[i], reverse_pts[i]) <= 0.5)
+                    {
+                        status[i] = 1;
+                    }
+                    else
+                        status[i] = 0;
+                }
+            }
+            // printf("gpu temporal optical flow costs: %f ms\n",t_og.toc());
+        }
     
         for (int i = 0; i < int(cur_pts.size()); i++)
             if (status[i] && !inBorder(cur_pts[i]))
@@ -203,14 +323,35 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
                     cout << "mask type wrong " << endl;
                 cv::goodFeaturesToTrack(cur_img, n_pts, MAX_CNT - cur_pts.size(), 0.01, MIN_DIST, mask);
                 // printf("good feature to track costs: %fms\n", t_t.toc());
-                std::cout << "n_pts size: "<< n_pts.size()<<std::endl;
             }
             else
                 n_pts.clear();
             // sum_n += n_pts.size();
             // printf("total point from non-gpu: %d\n",sum_n);
         }
-        // GPU mode disabled - using CPU version instead
+        else
+        {
+            if (n_max_cnt > 0)
+            {
+                if(mask.empty())
+                    cout << "mask is empty " << endl;
+                if (mask.type() != CV_8UC1)
+                    cout << "mask type wrong " << endl;
+                TicToc t_g;
+                cv::cuda::GpuMat cur_gpu_img(cur_img);
+                cv::cuda::GpuMat d_prevPts;
+                TicToc t_gg;
+                cv::cuda::GpuMat gpu_mask(mask);
+                cv::Ptr<cv::cuda::CornersDetector> detector = cv::cuda::createGoodFeaturesToTrackDetector(cur_gpu_img.type(), MAX_CNT - cur_pts.size(), 0.01, MIN_DIST);
+                detector->detect(cur_gpu_img, d_prevPts, gpu_mask);
+                if(!d_prevPts.empty())
+                    n_pts = cv::Mat_<cv::Point2f>(cv::Mat(d_prevPts));
+                else
+                    n_pts.clear();
+            }
+            else
+                n_pts.clear();
+        }
 
         ROS_DEBUG("add feature begins");
         TicToc t_a;
@@ -255,7 +396,51 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
                 }
                 // printf("left right optical flow cost %fms\n",t_check.toc());
             }
-            // GPU mode disabled - using CPU version instead
+            else
+            {
+                TicToc t_og1;
+                cv::cuda::GpuMat cur_gpu_img(cur_img);
+                cv::cuda::GpuMat right_gpu_Img(rightImg);
+                cv::cuda::GpuMat cur_gpu_pts(cur_pts);
+                cv::cuda::GpuMat cur_right_gpu_pts;
+                cv::cuda::GpuMat gpu_status;
+                cv::Ptr<cv::cuda::SparsePyrLKOpticalFlow> d_pyrLK_sparse = cv::cuda::SparsePyrLKOpticalFlow::create(
+                cv::Size(21, 21), 3, 30, false);
+                d_pyrLK_sparse->calc(cur_gpu_img, right_gpu_Img, cur_gpu_pts, cur_right_gpu_pts, gpu_status);
+
+                vector<cv::Point2f> tmp_cur_right_pts(cur_right_gpu_pts.cols);
+                cur_right_gpu_pts.download(tmp_cur_right_pts);
+                cur_right_pts = tmp_cur_right_pts;
+
+                vector<uchar> tmp_status(gpu_status.cols);
+                gpu_status.download(tmp_status);
+                status = tmp_status;
+
+                if(FLOW_BACK)
+                {
+                    cv::cuda::GpuMat reverseLeft_gpu_Pts;
+                    cv::cuda::GpuMat status_gpu_RightLeft;
+                    cv::Ptr<cv::cuda::SparsePyrLKOpticalFlow> d_pyrLK_sparse = cv::cuda::SparsePyrLKOpticalFlow::create(
+                    cv::Size(21, 21), 3, 30, false);
+                    d_pyrLK_sparse->calc(right_gpu_Img, cur_gpu_img, cur_right_gpu_pts, reverseLeft_gpu_Pts, status_gpu_RightLeft);
+
+                    vector<cv::Point2f> tmp_reverseLeft_Pts(reverseLeft_gpu_Pts.cols);
+                    reverseLeft_gpu_Pts.download(tmp_reverseLeft_Pts);
+                    reverseLeftPts = tmp_reverseLeft_Pts;
+
+                    vector<uchar> tmp1_status(status_gpu_RightLeft.cols);
+                    status_gpu_RightLeft.download(tmp1_status);
+                    statusRightLeft = tmp1_status;
+                    for(size_t i = 0; i < status.size(); i++)
+                    {
+                        if(status[i] && statusRightLeft[i] && inBorder(cur_right_pts[i]) && distance(cur_pts[i], reverseLeftPts[i]) <= 0.5)
+                            status[i] = 1;
+                        else
+                            status[i] = 0;
+                    }
+                }
+                // printf("gpu left right optical flow cost %fms\n",t_og1.toc());
+            }
             ids_right = ids;
             reduceVector(cur_right_pts, status);
             reduceVector(ids_right, status);
@@ -371,10 +556,16 @@ void FeatureTracker::rejectWithF()
 
 void FeatureTracker::readIntrinsicParameter(const vector<string> &calib_file)
 {
+    m_camera.clear();
+    stereo_cam = 0;
     for (size_t i = 0; i < calib_file.size(); i++)
     {
         ROS_INFO("reading paramerter of camera %s", calib_file[i].c_str());
         camodocal::CameraPtr camera = CameraFactory::instance()->generateCameraFromYamlFile(calib_file[i]);
+        if (!camera)
+            throw std::runtime_error("failed to load camera model: " + calib_file[i]);
+        if (camera->imageWidth() != COL || camera->imageHeight() != ROW)
+            ROS_WARN("camera model size does not match image_width/image_height: %s", calib_file[i].c_str());
         m_camera.push_back(camera);
     }
     if (calib_file.size() == 2)

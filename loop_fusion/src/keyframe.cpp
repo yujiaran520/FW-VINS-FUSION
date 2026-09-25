@@ -194,7 +194,6 @@ void KeyFrame::FundmantalMatrixRANSAC(const std::vector<cv::Point2f> &matched_2d
         vector<cv::Point2f> tmp_cur(n), tmp_old(n);
         for (int i = 0; i < (int)matched_2d_cur_norm.size(); i++)
         {
-            double FOCAL_LENGTH = 460.0;
             double tmp_x, tmp_y;
             tmp_x = FOCAL_LENGTH * matched_2d_cur_norm[i].x + COL / 2.0;
             tmp_y = FOCAL_LENGTH * matched_2d_cur_norm[i].y + ROW / 2.0;
@@ -588,5 +587,4 @@ BriefExtractor::BriefExtractor(const std::string &pattern_file)
 
   m_brief.importPairs(x1, y1, x2, y2);
 }
-
 

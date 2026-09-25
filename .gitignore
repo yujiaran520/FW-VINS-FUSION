@@ -1,0 +1,19 @@
+# Build and generated data (existing V0 assets remain tracked in their historical commit).
+/build/
+/install/
+/log/
+/results/
+/data/
+/ThirdParty/
+/deps_new.sh
+*.db3
+*.mcap
+*.bag
+*.csv
+!/config/FWAF-VID/manifest.csv
+*.log
+*.bin
+*.o
+*.so
+__pycache__/
+*.py[cod]

@@ -116,7 +116,7 @@ bool ProjectionOneFrameTwoCamFactor::Evaluate(double const *const *parameters, d
         {
             Eigen::Map<Eigen::Vector2d> jacobian_feature(jacobians[2]);
 #if 1
-            jacobian_feature = reduce * ric2.transpose() * ric * pts_i * -1.0 / (inv_dep_i * inv_dep_i);
+            jacobian_feature = reduce * ric2.transpose() * ric * pts_i_td * -1.0 / (inv_dep_i * inv_dep_i);
 #else
             jacobian_feature = reduce * ric.transpose() * Rj.transpose() * Ri * ric * pts_i;
 #endif

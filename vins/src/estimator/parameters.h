@@ -24,7 +24,6 @@ using namespace std;
 #define ROS_WARN RCUTILS_LOG_WARN
 #define ROS_ERROR RCUTILS_LOG_ERROR
 
-const double FOCAL_LENGTH = 460.0;
 const int WINDOW_SIZE = 10;
 const int NUM_OF_F = 1000;
 //#define UNIT_SPHERE_ERROR
@@ -37,8 +36,12 @@ extern int USE_GPU;
 extern int USE_GPU_ACC_FLOW;
 extern int USE_GPU_CERES;
 
-extern double ACC_N, ACC_W;
-extern double GYR_N, GYR_W;
+extern Eigen::Vector3d ACC_N, ACC_W;
+extern Eigen::Vector3d GYR_N, GYR_W;
+extern int IMU_NOISE_IS_DENSITY;
+extern double FOCAL_LENGTH;
+extern double FREQ;
+extern int DIAGNOSTICS;
 
 extern std::vector<Eigen::Matrix3d> RIC;
 extern std::vector<Eigen::Vector3d> TIC;

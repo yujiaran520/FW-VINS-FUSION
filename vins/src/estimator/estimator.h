@@ -11,6 +11,7 @@
  
 #include <thread>
 #include <mutex>
+#include <fstream>
 #include <std_msgs/msg/header.h>
 #include <std_msgs/msg/float32.h>
 #include <ceres/ceres.h>
@@ -47,6 +48,7 @@ class Estimator
     Estimator();
     ~Estimator();
     void setParameter();
+    void shutdown();
 
     // interface
     void initFirstPose(Eigen::Vector3d p, Eigen::Matrix3d r);
@@ -54,7 +56,7 @@ class Estimator
     void inputFeature(double t, const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &featureFrame);
     void inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1 = cv::Mat());
     void processIMU(double t, double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity);
-    void processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const double header);
+    bool processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const double header);
     void processMeasurements();
     void changeSensorType(int use_imu, int use_stereo);
 
@@ -96,9 +98,10 @@ class Estimator
         MARGIN_SECOND_NEW = 1
     };
 
-    std::mutex mProcess;
+    std::recursive_mutex mProcess;
     std::mutex mBuf;
     std::mutex mPropagate;
+    std::mutex mTracker;
     queue<pair<double, Eigen::Vector3d>> accBuf;
     queue<pair<double, Eigen::Vector3d>> gyrBuf;
     queue<pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > > featureBuf;
@@ -137,7 +140,11 @@ class Estimator
 
     int frame_count;
     int sum_of_outlier, sum_of_back, sum_of_front, sum_of_invalid;
-    int inputImageCnt;
+    double lastImageTime, nextBackendImageTime;
+    bool hasLastImageTime, backendScheduleInitialized, imageSizeWarningIssued;
+    cv::Size inputImageSize;
+    std::ofstream diagnosticsFile;
+    unsigned int diagnosticsSegment = 0;
 
     FeatureManager f_manager;
     MotionEstimator m_estimator;

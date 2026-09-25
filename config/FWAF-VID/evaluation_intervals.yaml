@@ -1,0 +1,25 @@
+# 由 FWAF-VID 图像着陆复核所得的手工截断，相对于 ROS 2 bag 起点（秒）。
+# GT/eval 是作者另选短区间，不应用以下截断；静态段没有位置参考。
+sequences:
+  Indoor_13: {dynamic: true, scene: indoor, evaluation_end_offset_s: 15.0, cutoff_confidence: high}
+  Indoor_14: {dynamic: true, scene: indoor, evaluation_end_offset_s: 33.5, cutoff_confidence: high}
+  Indoor_15: {dynamic: true, scene: indoor, evaluation_end_offset_s: 27.5, cutoff_confidence: medium}
+  Indoor_16: {dynamic: true, scene: indoor, evaluation_end_offset_s: 11.5, cutoff_confidence: medium}
+  Indoor_17: {dynamic: true, scene: indoor, evaluation_end_offset_s: 13.0, cutoff_confidence: medium}
+  Outdoor_01: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 139.5, cutoff_confidence: high}
+  Outdoor_02: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 133.5, cutoff_confidence: high}
+  Outdoor_03: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 190.5, cutoff_confidence: high}
+  Outdoor_04: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 149.0, cutoff_confidence: medium}
+  Outdoor_05: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 147.0, cutoff_confidence: high}
+  Outdoor_06: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 119.5, cutoff_confidence: high}
+  Outdoor_07: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 58.8, cutoff_confidence: medium}
+  Outdoor_08: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 33.0, cutoff_confidence: medium}
+  Outdoor_09: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 22.0, cutoff_confidence: medium}
+  Outdoor_10: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 29.0, cutoff_confidence: medium}
+  Outdoor_11: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 29.5, cutoff_confidence: medium}
+  Outdoor_12: {dynamic: true, scene: outdoor, evaluation_end_offset_s: 43.0, cutoff_confidence: low}
+  static_flapping_03: {dynamic: false, scene: static}
+  static_flapping_04: {dynamic: false, scene: static}
+  Static_flapping_18: {dynamic: false, scene: static}
+  Static_flapping_19: {dynamic: false, scene: static}
+  Static_flapping_20: {dynamic: false, scene: static}

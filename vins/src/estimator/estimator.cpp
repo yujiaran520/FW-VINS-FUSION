@@ -9,6 +9,9 @@
 
 #include "estimator.h"
 #include "../utility/visualization.h"
+#include <limits>
+#include <iomanip>
+#include <sstream>
 
 Estimator::Estimator(): f_manager{Rs}
 {
@@ -19,7 +22,12 @@ Estimator::Estimator(): f_manager{Rs}
 
 Estimator::~Estimator()
 {
-    if (MULTIPLE_THREAD)
+    shutdown();
+}
+
+void Estimator::shutdown()
+{
+    if (processThread.joinable())
     {
         processThread.join();
         printf("join thread \n");
@@ -29,19 +37,31 @@ Estimator::~Estimator()
 void Estimator::clearState()
 {
     mProcess.lock();
-    while(!accBuf.empty())
-        accBuf.pop();
-    while(!gyrBuf.empty())
-        gyrBuf.pop();
-    while(!featureBuf.empty())
-        featureBuf.pop();
+    if (diagnosticsFile.is_open())
+        ++diagnosticsSegment;
+    std::lock_guard<std::mutex> trackerLock(mTracker);
+    {
+        std::lock_guard<std::mutex> bufferLock(mBuf);
+        while(!accBuf.empty())
+            accBuf.pop();
+        while(!gyrBuf.empty())
+            gyrBuf.pop();
+        while(!featureBuf.empty())
+            featureBuf.pop();
+    }
 
     prevTime = -1;
     curTime = 0;
     openExEstimation = 0;
     initP = Eigen::Vector3d(0, 0, 0);
     initR = Eigen::Matrix3d::Identity();
-    inputImageCnt = 0;
+    lastImageTime = 0.0;
+    nextBackendImageTime = 0.0;
+    hasLastImageTime = false;
+    backendScheduleInitialized = false;
+    imageSizeWarningIssued = false;
+    inputImageSize = cv::Size();
+    featureTracker.reset();
     initFirstPoseFlag = false;
 
     for (int i = 0; i < WINDOW_SIZE + 1; i++)
@@ -115,7 +135,22 @@ void Estimator::setParameter()
     td = TD;
     g = G;
     cout << "set g " << g.transpose() << endl;
-    featureTracker.readIntrinsicParameter(CAM_NAMES);
+    if (DIAGNOSTICS && !diagnosticsFile.is_open())
+    {
+        const std::string path = OUTPUT_FOLDER + "/intermediate.csv";
+        diagnosticsFile.open(path, std::ios::out);
+        if (!diagnosticsFile)
+            throw std::runtime_error("cannot open diagnostics: " + path);
+        diagnosticsFile << "segment,image_time,imu_time,imu_start,imu_samples,dt_min,dt_max,dt_sum,"
+                           "preint_sum_dt,dp_x,dp_y,dp_z,dv_x,dv_y,dv_z,dq_w,dq_x,dq_y,dq_z,"
+                           "cov_p_x,cov_v_x,cov_rot_x,ba_x,ba_y,ba_z,bg_x,bg_y,bg_z,"
+                           "features,solver_state,td,noise_is_density\n";
+        diagnosticsFile << std::setprecision(17);
+    }
+    {
+        std::lock_guard<std::mutex> trackerLock(mTracker);
+        featureTracker.readIntrinsicParameter(CAM_NAMES);
+    }
 
     std::cout << "MULTIPLE_THREAD is " << MULTIPLE_THREAD << '\n';
     if (MULTIPLE_THREAD && !initThreadFlag)
@@ -153,6 +188,8 @@ void Estimator::changeSensorType(int use_imu, int use_stereo)
             }
         }
         
+        if (STEREO != use_stereo)
+            restart = true;
         STEREO = use_stereo;
         printf("use imu %d use stereo %d\n", USE_IMU, STEREO);
     }
@@ -166,7 +203,37 @@ void Estimator::changeSensorType(int use_imu, int use_stereo)
 
 void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
 {
-    inputImageCnt++;
+    std::unique_lock<std::mutex> trackerLock(mTracker);
+    if (!std::isfinite(t) || (hasLastImageTime && t <= lastImageTime))
+    {
+        ROS_WARN("drop image with non-increasing timestamp: %.9f after %.9f", t, lastImageTime);
+        return;
+    }
+    if (_img.empty() || (STEREO && _img1.empty()))
+    {
+        ROS_WARN("drop incomplete image frame");
+        return;
+    }
+    if (!_img1.empty() && _img1.size() != _img.size())
+    {
+        ROS_WARN("drop stereo frame with different left/right image sizes");
+        return;
+    }
+    if (!inputImageSize.empty() && _img.size() != inputImageSize)
+    {
+        ROS_WARN("drop image after unexpected resolution change");
+        return;
+    }
+    if (inputImageSize.empty())
+        inputImageSize = _img.size();
+    if (!imageSizeWarningIssued && (_img.cols != COL || _img.rows != ROW))
+    {
+        ROS_WARN("received image size does not match image_width/image_height");
+        imageSizeWarningIssued = true;
+    }
+    lastImageTime = t;
+    hasLastImageTime = true;
+
     map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> featureFrame;
     TicToc featureTrackerTime;
 
@@ -182,20 +249,31 @@ void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
         pubTrackImage(imgTrack, t);
     }
     
-    if(MULTIPLE_THREAD)  
-    {     
-        if(inputImageCnt % 2 == 0)
-        {
-            mBuf.lock();
-            featureBuf.push(make_pair(t, featureFrame));
-            mBuf.unlock();
-        }
-    }
-    else
+    const bool publishToBackend = FREQ <= 0.0 || !backendScheduleInitialized ||
+                                  t >= nextBackendImageTime - 1e-6;
+    if (!publishToBackend)
+        return;
+    if (FREQ > 0.0)
     {
-        mBuf.lock();
+        if (!backendScheduleInitialized)
+        {
+            nextBackendImageTime = t;
+            backendScheduleInitialized = true;
+        }
+        const double period = 1.0 / FREQ;
+        const double periodsToAdvance = std::floor(std::max(0.0, t - nextBackendImageTime) / period) + 1.0;
+        nextBackendImageTime += periodsToAdvance * period;
+        if (nextBackendImageTime <= t)
+            nextBackendImageTime = std::nextafter(t, std::numeric_limits<double>::infinity());
+    }
+    {
+        std::lock_guard<std::mutex> bufferLock(mBuf);
         featureBuf.push(make_pair(t, featureFrame));
-        mBuf.unlock();
+    }
+    trackerLock.unlock();
+
+    if(!MULTIPLE_THREAD)
+    {
         TicToc processTime;
         processMeasurements();
         printf("process time: %f\n", processTime.toc());
@@ -283,30 +361,46 @@ bool Estimator::IMUAvailable(double t)
 
 void Estimator::processMeasurements()
 {
-    while (1)
+    while (rclcpp::ok())
     {
         // cout << "[processMeasurements]  loop - start" << endl;
 
+        mProcess.lock();
         pair<double, map<int, vector<pair<int, Eigen::Matrix<double, 7, 1> > > > > feature;
         vector<pair<double, Eigen::Vector3d>> accVector, gyrVector;
-        if(!featureBuf.empty())
+        mBuf.lock();
+        const bool hasFeature = !featureBuf.empty();
+        if (hasFeature)
+            feature = featureBuf.front();
+        mBuf.unlock();
+        if(hasFeature)
         {
             // cout << "1" << endl;
-            feature = featureBuf.front();
             curTime = feature.first + td;
             // std::cout << "t0: " << std::fixed << curTime << std::endl;
-            while(1)
+            while(rclcpp::ok())
             {
-                if ((!USE_IMU  || IMUAvailable(feature.first + td)))
+                mBuf.lock();
+                const bool measurementsAvailable = !USE_IMU || IMUAvailable(feature.first + td);
+                mBuf.unlock();
+                if (measurementsAvailable)
                     break;
                 else
                 {
                     printf("wait for imu ... \n");
                     if (! MULTIPLE_THREAD)
+                    {
+                        mProcess.unlock();
                         return;
+                    }
                     std::chrono::milliseconds dura(5);
                     std::this_thread::sleep_for(dura);
                 }
+            }
+            if (!rclcpp::ok())
+            {
+                mProcess.unlock();
+                return;
             }
             // cout << "2" << endl;
             mBuf.lock();
@@ -339,9 +433,54 @@ void Estimator::processMeasurements()
             }
             // cout << "4" << endl;
 
-            mProcess.lock();
-            processImage(feature.second, feature.first);
+            std::ostringstream diagnostic;
+            if (diagnosticsFile.is_open())
+            {
+                double dtMin = std::numeric_limits<double>::infinity();
+                double dtMax = 0.0, dtSum = 0.0;
+                for (size_t i = 0; i < accVector.size(); ++i)
+                {
+                    if (i == 0 && prevTime < 0.0)
+                        continue;
+                    const double dt = i == 0 ? accVector[i].first - prevTime :
+                        (i + 1 == accVector.size() ? curTime - accVector[i - 1].first :
+                         accVector[i].first - accVector[i - 1].first);
+                    if (std::isfinite(dt) && dt > 0.0)
+                    {
+                        dtMin = std::min(dtMin, dt);
+                        dtMax = std::max(dtMax, dt);
+                        dtSum += dt;
+                    }
+                }
+                const IntegrationBase *pre = frame_count > 0 ? pre_integrations[frame_count] : nullptr;
+                diagnostic << std::setprecision(17) << diagnosticsSegment << ',' << feature.first << ',' << curTime << ','
+                           << prevTime << ',' << accVector.size() << ',' << (std::isfinite(dtMin) ? dtMin : 0.0)
+                           << ',' << dtMax << ',' << dtSum << ',' << (pre ? pre->sum_dt : 0.0);
+                const Vector3d dp = pre ? pre->delta_p : Vector3d::Zero().eval();
+                const Vector3d dv = pre ? pre->delta_v : Vector3d::Zero().eval();
+                const Quaterniond dq = pre ? pre->delta_q : Quaterniond::Identity();
+                diagnostic << ',' << dp.x() << ',' << dp.y() << ',' << dp.z()
+                           << ',' << dv.x() << ',' << dv.y() << ',' << dv.z()
+                           << ',' << dq.w() << ',' << dq.x() << ',' << dq.y() << ',' << dq.z()
+                           << ',' << (pre ? pre->covariance(0, 0) : 0.0)
+                           << ',' << (pre ? pre->covariance(6, 6) : 0.0)
+                           << ',' << (pre ? pre->covariance(3, 3) : 0.0);
+            }
+            if (!processImage(feature.second, feature.first))
+            {
+                mProcess.unlock();
+                continue;
+            }
             prevTime = curTime;
+            if (diagnosticsFile.is_open())
+            {
+                diagnostic << ',' << Bas[frame_count].x() << ',' << Bas[frame_count].y()
+                           << ',' << Bas[frame_count].z() << ',' << Bgs[frame_count].x()
+                           << ',' << Bgs[frame_count].y() << ',' << Bgs[frame_count].z()
+                           << ',' << feature.second.size() << ',' << (solver_flag == NON_LINEAR ? 1 : 0)
+                           << ',' << td << ',' << IMU_NOISE_IS_DENSITY << '\n';
+                diagnosticsFile << diagnostic.str();
+            }
 
             // cout << "5" << endl;
 
@@ -367,13 +506,11 @@ void Estimator::processMeasurements()
             // cout << "5-5" << endl;
             pubTF(*this, header);
             // cout << "5-6" << endl;
-            mProcess.unlock();
-
-
             // cout << "6" << endl;
 
             // assert(0);
         }
+        mProcess.unlock();
         // cout << "[processMeasurements]  loop - end" << endl;
 
         if (! MULTIPLE_THREAD)
@@ -451,7 +588,7 @@ void Estimator::processIMU(double t, double dt, const Vector3d &linear_accelerat
     gyr_0 = angular_velocity; 
 }
 
-void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const double header)
+bool Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const double header)
 {
 
 
@@ -598,7 +735,10 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         f_manager.removeOutlier(removeIndex);
         if (! MULTIPLE_THREAD)
         {
-            featureTracker.removeOutliers(removeIndex);
+            {
+                std::lock_guard<std::mutex> trackerLock(mTracker);
+                featureTracker.removeOutliers(removeIndex);
+            }
             predictPtsInNextFrame();
         }
             
@@ -610,7 +750,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
             clearState();
             setParameter();
             ROS_WARN("system reboot!");
-            return;
+            return false;
         }
 
         slideWindow();
@@ -625,7 +765,8 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         last_R0 = Rs[0];
         last_P0 = Ps[0];
         updateLatestStates();
-    }  
+    }
+    return true;
 }
 
 bool Estimator::initialStructure()
@@ -1165,13 +1306,8 @@ void Estimator::optimization()
     //printf("prepare for ceres: %f \n", t_prepare.toc());
 
     ceres::Solver::Options options;
-
-    if (USE_GPU_CERES)
-        // std::cout << "1" << endl;
-        options.dense_linear_algebra_library_type = ceres::CUDA;
-    else
-        // std::cout << "2" << endl;
-        options.linear_solver_type = ceres::DENSE_SCHUR;
+    options.linear_solver_type = ceres::DENSE_SCHUR;
+    options.dense_linear_algebra_library_type = USE_GPU_CERES ? ceres::CUDA : ceres::EIGEN;
 
     //options.num_threads = 2;
     options.trust_region_strategy_type = ceres::DOGLEG;
@@ -1563,6 +1699,7 @@ void Estimator::predictPtsInNextFrame()
             }
         }
     }
+    std::lock_guard<std::mutex> trackerLock(mTracker);
     featureTracker.setPrediction(predictPts);
     //printf("estimator output %d predict pts\n",(int)predictPts.size());
 }

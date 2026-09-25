@@ -43,6 +43,7 @@ extern rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_po
 extern int IMAGE_ROW, IMAGE_COL;
 
 void registerPub(rclcpp::Node::SharedPtr n);
+void unregisterPub();
 
 void pubLatestOdometry(const Eigen::Vector3d &P, const Eigen::Quaterniond &Q, const Eigen::Vector3d &V, double t);
 

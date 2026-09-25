@@ -1,0 +1,90 @@
+%YAML:1.0
+
+# FWAF-VID：前视 D435i 左红外相机 + CUAV V5+ IMU，单目视觉惯性配置。
+
+# 是否融合 IMU；1 为视觉惯性模式，0 为纯视觉模式。
+imu: 1
+# 参与估计的相机数量；单目模式固定为 1。
+num_of_cam: 1
+
+# CUAV V5+ 经 MAVROS 发布的 IMU 话题。
+imu_topic: "/mavros/imu/data"
+# 主相机（左红外）的图像话题。
+image0_topic: "/camera/infra1/image_rect_raw"
+# 第二相机图像话题；单目模式不读取，保留以便切换配置。
+image1_topic: "/camera/infra2/image_rect_raw"
+# 轨迹、日志和位姿图等运行结果的根目录。
+output_path: "/tmp"
+
+# 主相机的内参与畸变模型文件，相对路径以本配置所在目录为基准。
+cam0_calib: "left.yaml"
+# 输入图像宽度，单位为像素。
+image_width: 640
+# 输入图像高度，单位为像素。
+image_height: 480
+# 将归一化平面误差换算为像素误差的虚拟焦距；采用 rectified 相机焦距。
+focal_length: 390.7312927246094
+
+# 使用 CUDA 执行角点检测；实测可显著降低 CPU 占用。
+use_gpu: 1
+# 使用 CUDA 执行时序光流；单目模式不执行左右目光流。
+use_gpu_acc_flow: 1
+# 使用 CUDA 执行 Ceres 稠密线性求解；小规模滑窗问题实测更慢，故关闭。
+use_gpu_ceres: 0
+
+# 0 固定使用内联标定；调整 IMU 安装外参可直接编辑以下矩阵。
+estimate_extrinsic: 0
+# Kalibr CUAV 前视 cam0.T_cam_imu：CUAV IMU→左相机；平移 m，内部完整 SE(3) 求逆。
+# 来源：D435i+CUAV_IMU/cuav_imu_stereo-camchain-imucam.yaml。
+T_cam_imu0: !!opencv-matrix
+   rows: 4
+   cols: 4
+   dt: d
+   data: [-0.018645962522698345, -0.9997020115745703, -0.015754876558105313, 0.0008122023434833528,
+           0.1824776082680175, 0.012090313258586782, -0.9831356705999912, -0.0011884474511518726,
+           0.9830331889424626, -0.021206423061616242, 0.1821977965249461, -0.00006960745783952919,
+           0.0, 0.0, 0.0, 1.0]
+
+# 是否启用前端与后端并行线程；1 可避免图像回调被优化阻塞。
+multiple_thread: 1
+# 每帧维持的最大特征点数量。
+max_cnt: 150
+# 新特征点之间允许的最小像素距离。
+min_dist: 30
+# 发布给后端的目标图像频率，单位为 Hz。
+freq: 10
+# 基础矩阵 RANSAC 的像素内点阈值。
+F_threshold: 1.0
+# 是否发布特征跟踪可视化图像；无 RViz 性能模式下关闭。
+show_track: 0
+# 是否执行反向光流一致性检查；1 可剔除不可靠跟踪。
+flow_back: 1
+
+# 单次非线性优化允许的最长时间，单位为秒。
+max_solver_time: 0.04
+# 单次非线性优化的最大迭代次数。
+max_num_iterations: 8
+# 判定关键帧的平均视差阈值，单位为像素。
+keyframe_parallax: 10.0
+
+# CUAV V5+_imu_param.yaml x/y/z Allan 原始连续时间密度；不要使用 avg-axis 代替三轴。
+# acc_n [m/s^2/√Hz]、gyr_n [rad/s/√Hz]；偏置游走 acc_w [m/s^2/√s]、gyr_w [rad/s/√s]。
+imu_noise_is_density: 1
+acc_n: [0.011384664470144778, 0.012071769034258254, 0.009217418481979803]
+gyr_n: [0.0017650511889926112, 0.0021919789600752131, 0.0010840985347656392]
+acc_w: [0.00017171532352727888, 0.00020914852222504420, 0.00015551236213222607]
+gyr_w: [0.000011455278809750711, 0.000010763172170282426, 0.000061619311252609360]
+# Kalibr 标定采用的重力加速度模长，单位为 m/s^2。
+g_norm: 9.80655
+
+# 是否在线估计相机与 IMU 的时间偏移；0 表示固定使用离线标定值。
+estimate_td: 0
+# Kalibr cam0.timeshift_cam_imu，秒；t_imu = t_image + td。
+td: 0.0007393121017207066
+
+# 启动时是否加载已有位姿图；独立基准运行时关闭。
+load_previous_pose_graph: 0
+# 位姿图读取和保存目录。
+pose_graph_save_path: "/tmp"
+# 是否保存回环检测使用的关键帧图像；关闭以减少磁盘和内存开销。
+save_image: 0
